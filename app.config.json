@@ -3,7 +3,7 @@
   "app": {
     "name": "Axis Davis Capacity Planner",
     "version": "1.0.0",
-    "description": "Axis infrastructure capacity planning and forecasting application using live Dynatrace data.",
+    "description": "Axis infrastructure capacity planning with live Dynatrace data.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
       { "name": "storage:metrics:read", "comment": "Read host metrics from Grail" },
