@@ -97,11 +97,18 @@ const startMs = (value: unknown) => {
   return Date.now() - 24 * 60 * 60 * 1000;
 };
 
-interface HostMetricRecord {
+interface CurrentHostRecord {
   'dt.entity.host'?: unknown;
   'host.entity.name'?: unknown;
   'host.hostGroupName'?: unknown;
   'host.managementZones'?: unknown;
+  cpu?: unknown;
+  memory?: unknown;
+  disk?: unknown;
+}
+
+interface SeriesRecord {
+  'dt.entity.host'?: unknown;
   cpuSeries?: unknown;
   memorySeries?: unknown;
   diskSeries?: unknown;
@@ -109,19 +116,16 @@ interface HostMetricRecord {
   interval?: unknown;
 }
 
-async function getHostMetrics(): Promise<HostMetricRecord[]> {
-  // Critical change: the host entity metadata is joined INSIDE DQL.
-  // The React code no longer joins a separately-fetched entity ID to a
-  // separately-fetched metric ID. This removes the source of the 0% rows.
-  return executeDql<HostMetricRecord>(`
+async function getCurrentHostMetrics(): Promise<CurrentHostRecord[]> {
+  // This is the exact scalar DQL already proven in the Dynatrace Notebook.
+  // The host metadata is joined in DQL so the returned row is self-contained.
+  return executeDql<CurrentHostRecord>(`
     timeseries {
-      cpuSeries = avg(dt.host.cpu.usage),
-      memorySeries = avg(dt.host.memory.usage),
-      diskSeries = avg(dt.host.disk.used.percent)
+      cpu = avg(dt.host.cpu.usage, scalar:true),
+      memory = avg(dt.host.memory.usage, scalar:true),
+      disk = avg(dt.host.disk.used.percent, scalar:true)
     },
-    by:{dt.entity.host},
-    interval:1h,
-    from:-24h
+    by:{dt.entity.host}
     | lookup [
         fetch dt.entity.host
         | fields id, entity.name, hostGroupName, managementZones
@@ -133,11 +137,12 @@ async function getHostMetrics(): Promise<HostMetricRecord[]> {
   `);
 }
 
-async function getNetworkMetrics(): Promise<Array<Record<string, unknown>>> {
-  return executeDql<Record<string, unknown>>(`
+async function getHostSeries(): Promise<SeriesRecord[]> {
+  return executeDql<SeriesRecord>(`
     timeseries {
-      rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.nic.link_util_tx)
+      cpuSeries = avg(dt.host.cpu.usage),
+      memorySeries = avg(dt.host.memory.usage),
+      diskSeries = avg(dt.host.disk.used.percent)
     },
     by:{dt.entity.host},
     interval:1h,
@@ -145,16 +150,30 @@ async function getNetworkMetrics(): Promise<Array<Record<string, unknown>>> {
   `);
 }
 
+async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>> {
+  const records = await executeDql<Record<string, unknown>>(`
+    timeseries {
+      rx = avg(dt.host.net.nic.link_util_rx),
+      tx = avg(dt.host.net.nic.link_util_tx)
+    },
+    by:{dt.entity.host},
+    interval:1h,
+    from:-24h
+  `).catch(() => []);
+  return new Map(records.map((r) => [String(r['dt.entity.host'] ?? '').trim(), r]));
+}
+
 export async function getHosts(managementZone?: string): Promise<Host[]> {
-  const [records, networkRecords] = await Promise.all([
-    getHostMetrics(),
-    getNetworkMetrics().catch(() => []),
+  const [currentRecords, seriesRecords, networkByHost] = await Promise.all([
+    getCurrentHostMetrics(),
+    getHostSeries(),
+    getNetworkSeries(),
   ]);
 
-  const networkByHost = new Map(networkRecords.map((r) => [String(r['dt.entity.host'] ?? '').trim(), r]));
+  const seriesByHost = new Map(seriesRecords.map((r) => [String(r['dt.entity.host'] ?? '').trim(), r]));
   const selected = managementZone && managementZone !== 'All Management Zones' ? managementZone : undefined;
 
-  return records
+  return currentRecords
     .filter((record) => {
       if (!selected) return true;
       const zones = Array.isArray(record['host.managementZones'])
@@ -164,15 +183,22 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     })
     .map((record) => {
       const id = String(record['dt.entity.host'] ?? '').trim();
-      const cpu = numbers(record.cpuSeries);
-      const memory = numbers(record.memorySeries);
-      const disk = numbers(record.diskSeries);
+      const series = seriesByHost.get(id);
       const network = networkByHost.get(id);
+
+      const currentCpu = numeric(record.cpu) ?? 0;
+      const currentMemory = numeric(record.memory) ?? 0;
+      const currentDisk = numeric(record.disk) ?? 0;
+
+      const cpu = numbers(series?.cpuSeries);
+      const memory = numbers(series?.memorySeries);
+      const disk = numbers(series?.diskSeries);
       const rx = numbers(network?.rx);
       const tx = numbers(network?.tx);
+
       const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
-      const start = startMs(record.timeframe);
-      const step = intervalMs(record.interval);
+      const start = startMs(series?.timeframe);
+      const step = intervalMs(series?.interval);
       const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
         timestamp: new Date(start + index * step).toISOString(),
         cpu: cpu[index] ?? 0,
@@ -182,10 +208,11 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
         networkTx: tx[index] ?? 0,
       }));
 
+      // Scalar query is authoritative for the live cards/table.
       const latest = telemetry[telemetry.length - 1];
-      latest.cpu = lastNumber(record.cpuSeries);
-      latest.memory = lastNumber(record.memorySeries);
-      latest.disk = lastNumber(record.diskSeries);
+      latest.cpu = currentCpu;
+      latest.memory = currentMemory;
+      latest.disk = currentDisk;
 
       const name = String(record['host.entity.name'] ?? id ?? 'Unknown host');
       const group = String(record['host.hostGroupName'] ?? '').trim();
@@ -198,7 +225,7 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
         name,
         environment: environmentFromHost(group),
         application: group || 'Unclassified host group',
-        profile: statusFromMetrics(latest.cpu, latest.memory, latest.disk),
+        profile: statusFromMetrics(currentCpu, currentMemory, currentDisk),
         managementZones: zones,
         telemetry,
       } satisfies Host;
