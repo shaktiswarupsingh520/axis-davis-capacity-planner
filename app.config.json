@@ -1,16 +1,14 @@
 {
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
-    "id": "my.axis.davis.capacity.planner",
-	"scopes": [
-    { "name": "storage:metrics:read", "description": "Read metrics data" },
-    { "name": "storage:entities:read", "description": "Read host infrastructure entities" },
-    { "name": "dql:read", "description": "Execute Davis DQL queries" }
-   ]
     "name": "Axis Davis Capacity Planner",
     "version": "1.0.0",
-    "description": "Axis infrastructure capacity planning and forecasting R&D simulator.",
-    "scopes": []
+    "description": "Axis infrastructure capacity planning and forecasting application using live Dynatrace data.",
+    "id": "my.axis.davis.capacity.planner",
+    "scopes": [
+      { "name": "storage:metrics:read", "comment": "Read host metrics from Grail" },
+      { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" }
+    ]
   },
   "build": {
     "sourceRoot": "src"
