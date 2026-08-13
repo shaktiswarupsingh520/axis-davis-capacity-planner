@@ -21,8 +21,8 @@ async function executeDql<T extends Record<string, unknown>>(query: string): Pro
   });
 
   let result: QueryResult | undefined = response.result as QueryResult | undefined;
-  let state = response.state;
   let token = response.requestToken;
+  let state = response.state;
 
   for (let attempt = 0; !result && token && attempt < 30; attempt += 1) {
     const polled = await queryExecutionClient.queryPoll({
@@ -31,10 +31,8 @@ async function executeDql<T extends Record<string, unknown>>(query: string): Pro
     });
     state = polled.state;
     result = polled.result as QueryResult | undefined;
-    token = undefined;
     if (!result && state === 'RUNNING') {
       await new Promise((resolve) => setTimeout(resolve, 300));
-      token = response.requestToken;
     }
   }
 
@@ -46,26 +44,26 @@ async function executeDql<T extends Record<string, unknown>>(query: string): Pro
 }
 
 export async function getManagementZones(): Promise<ManagementZoneOption[]> {
-  const records = await executeDql<{ zone?: unknown }>(`
+  const records = await executeDql<{ managementZones?: unknown }>(`
     fetch dt.entity.host
     | expand managementZones
     | filterOut isNull(managementZones)
     | dedup managementZones
-    | fields zone = managementZones
-    | sort zone
+    | fields managementZones
+    | sort managementZones
   `);
 
   return records
-    .map((record) => String(record.zone ?? '').trim())
+    .map((record) => String(record.managementZones ?? '').trim())
     .filter(Boolean)
     .map((name) => ({ name }));
 }
 
 const environmentFromHost = (hostGroupName: string) => {
   const value = hostGroupName.toLowerCase();
-  if (/\b(dr|disaster|secondary)\b/.test(value)) return 'DR';
-  if (/\b(uat|test|qa|stage|staging)\b/.test(value)) return 'UAT';
-  if (/\b(prod|production|prd)\b/.test(value)) return 'Production';
+  if (/\\b(dr|disaster|secondary)\\b/.test(value)) return 'DR';
+  if (/\\b(uat|test|qa|stage|staging)\\b/.test(value)) return 'UAT';
+  if (/\\b(prod|production|prd)\\b/.test(value)) return 'Production';
   return 'Unknown';
 };
 
@@ -83,7 +81,7 @@ const numericArray = (value: unknown): number[] => Array.isArray(value)
   : [];
 
 const intervalToMs = (value: unknown) => {
-  const match = String(value ?? '1h').match(/^(\d+)\s*([smhd])$/i);
+  const match = String(value ?? '1h').match(/^(\\d+)\\s*([smhd])$/i);
   if (!match) return 60 * 60 * 1000;
   const amount = Number(match[1]);
   const unit = match[2].toLowerCase();
@@ -99,46 +97,97 @@ const timeframeStart = (value: unknown) => {
   return Date.now() - 24 * 60 * 60 * 1000;
 };
 
-export async function getHosts(managementZone?: string): Promise<Host[]> {
+interface HostEntityRecord {
+  id?: unknown;
+  entity?: unknown;
+  hostGroupName?: unknown;
+  managementZones?: unknown;
+  tags?: unknown;
+}
+
+interface MetricRecord {
+  'dt.entity.host'?: unknown;
+  cpu?: unknown;
+  memory?: unknown;
+  disk?: unknown;
+  rx?: unknown;
+  tx?: unknown;
+  timeframe?: unknown;
+  interval?: unknown;
+}
+
+async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
   const escapedZone = managementZone && managementZone !== 'All Management Zones'
     ? escapeDqlString(managementZone)
     : undefined;
 
-  // Query telemetry first, then enrich each host directly from the entity store.
-  // This avoids an inner lookup dropping telemetry rows when the entity lookup
-  // and metric result sets are evaluated in different scopes.
   const zoneFilter = escapedZone
-    ? `| filter iAny(managementZones[] == "${escapedZone}")`
+    ? `| filter managementZones == "${escapedZone}"`
     : '';
 
-  const query = `
+  return executeDql<HostEntityRecord>(`
+    fetch dt.entity.host
+    | expand managementZones
+    ${zoneFilter}
+    | fields id, entity.name, hostGroupName, managementZones, tags
+    | dedup id
+  `);
+}
+
+async function getHostMetrics(): Promise<MetricRecord[]> {
+  // Keep metric collection independent from entity filtering. This makes the
+  // application resilient when a particular optional metric is unavailable.
+  const primary = await executeDql<MetricRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage),
       memory = avg(dt.host.memory.usage),
-      disk = avg(dt.host.disk.used.percent),
-      rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.nic.link_util_tx)
+      disk = avg(dt.host.disk.used.percent)
     }, by:{dt.entity.host}, interval:1h, from:-24h
-    | fieldsAdd managementZones = entityAttr(dt.entity.host, "managementZones")
-    | fieldsAdd hostName = entityName(dt.entity.host)
-    | fieldsAdd hostGroupName = entityAttr(dt.entity.host, "hostGroupName")
-    | fieldsAdd tags = entityAttr(dt.entity.host, "tags")
-    ${zoneFilter}
-    | fieldsAdd cpuCurrent=arrayLast(cpu), memoryCurrent=arrayLast(memory), diskCurrent=arrayLast(disk), rxCurrent=arrayLast(rx), txCurrent=arrayLast(tx)
-    | fields dt.entity.host, hostName, hostGroupName, managementZones, tags, timeframe, interval, cpu, memory, disk, rx, tx, cpuCurrent, memoryCurrent, diskCurrent, rxCurrent, txCurrent
-  `;
+  `);
 
-  const records = await executeDql<Record<string, unknown>>(query);
+  let network: MetricRecord[] = [];
+  try {
+    network = await executeDql<MetricRecord>(`
+      timeseries {
+        rx = avg(dt.host.net.nic.link_util_rx),
+        tx = avg(dt.host.net.nic.link_util_tx)
+      }, by:{dt.entity.host}, interval:1h, from:-24h
+    `);
+  } catch {
+    // Network metrics are optional for the capacity view; CPU/memory/disk
+    // should still populate the dashboard.
+  }
 
-  return records.map((record) => {
-    const cpu = numericArray(record.cpu);
-    const memory = numericArray(record.memory);
-    const disk = numericArray(record.disk);
-    const rx = numericArray(record.rx);
-    const tx = numericArray(record.tx);
+  const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+  return primary.map((record) => ({
+    ...record,
+    rx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.rx,
+    tx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.tx,
+  }));
+}
+
+export async function getHosts(managementZone?: string): Promise<Host[]> {
+  // First resolve the actual host entities. Management-zone membership is an
+  // entity attribute, so filtering this query guarantees that the selected
+  // zone controls the returned fleet independently of metric joins.
+  const entities = await getHostEntities(managementZone);
+  if (!entities.length) return [];
+
+  const metricRecords = await getHostMetrics();
+  const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+
+  return entities.map((entity) => {
+    const id = String(entity.id ?? '');
+    const metric = metricsByHost.get(id);
+    const cpu = numericArray(metric?.cpu);
+    const memory = numericArray(metric?.memory);
+    const disk = numericArray(metric?.disk);
+    const rx = numericArray(metric?.rx);
+    const tx = numericArray(metric?.tx);
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
-    const start = timeframeStart(record.timeframe);
-    const step = intervalToMs(record.interval);
+    const start = timeframeStart(metric?.timeframe);
+    const step = intervalToMs(metric?.interval);
+
     const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
       timestamp: new Date(start + index * step).toISOString(),
       cpu: cpu[index] ?? 0,
@@ -149,14 +198,17 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     }));
 
     const latest = telemetry[telemetry.length - 1];
-    const name = String(record.hostName ?? record['dt.entity.host'] ?? 'Unknown host');
-    const hostGroup = String(record.hostGroupName ?? '').trim();
-    const managementZones = Array.isArray(record.managementZones)
-      ? record.managementZones.map(String)
-      : [];
+    const entityName = typeof entity.entity === 'object' && entity.entity !== null && 'name' in entity.entity
+      ? (entity.entity as { name?: unknown }).name
+      : undefined;
+    const name = String(entityName ?? id || 'Unknown host');
+    const hostGroup = String(entity.hostGroupName ?? '').trim();
+    const managementZones = Array.isArray(entity.managementZones)
+      ? entity.managementZones.map(String)
+      : [String(entity.managementZones ?? '')].filter(Boolean);
 
     return {
-      id: String(record['dt.entity.host'] ?? name),
+      id,
       name,
       environment: environmentFromHost(hostGroup),
       application: hostGroup || 'Unclassified host group',
