@@ -1,0 +1,21 @@
+{
+  "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
+  "app": {
+    "id": "my.axis.davis.capacity.planner",
+	"scopes": [
+    { "name": "storage:metrics:read", "description": "Read metrics data" },
+    { "name": "storage:entities:read", "description": "Read host infrastructure entities" },
+    { "name": "dql:read", "description": "Execute Davis DQL queries" }
+   ]
+    "name": "Axis Davis Capacity Planner",
+    "version": "1.0.0",
+    "description": "Axis infrastructure capacity planning and forecasting R&D simulator.",
+    "scopes": []
+  },
+  "build": {
+    "sourceRoot": "src"
+  },
+  "server": {
+    "port": 3001
+  }
+}
