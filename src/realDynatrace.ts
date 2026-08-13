@@ -114,18 +114,14 @@ interface HostEntityRecord {
   managementZones?: unknown;
 }
 
-interface CurrentHostRecord {
-  'dt.entity.host'?: unknown;
-  cpu?: unknown;
-  memory?: unknown;
-  disk?: unknown;
-}
-
 interface SeriesRecord {
   'dt.entity.host'?: unknown;
   cpuSeries?: unknown;
   memorySeries?: unknown;
   diskSeries?: unknown;
+  cpuCurrent?: unknown;
+  memoryCurrent?: unknown;
+  diskCurrent?: unknown;
   timeframe?: unknown;
   interval?: unknown;
 }
@@ -150,19 +146,13 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
   return executeDql<HostEntityRecord>(query);
 }
 
-async function getCurrentHostMetrics(): Promise<CurrentHostRecord[]> {
-  return executeDql<CurrentHostRecord>(`
-    timeseries {
-      cpu = avg(dt.host.cpu.usage, scalar:true),
-      memory = avg(dt.host.memory.usage, scalar:true),
-      disk = avg(dt.host.disk.used.percent, scalar:true)
-    },
-    by:{dt.entity.host}
-    | fields dt.entity.host, cpu, memory, disk
-  `);
-}
-
-async function getHostSeries(): Promise<SeriesRecord[]> {
+async function getHostSeries(managementZone?: string): Promise<SeriesRecord[]> {
+  const selected = managementZone && managementZone !== 'All Management Zones';
+  const zoneFilter = selected
+    ? `
+    | filterOut isNull(dt.entity.host)
+  `
+    : '';
   return executeDql<SeriesRecord>(`
     timeseries {
       cpuSeries = avg(dt.host.cpu.usage),
@@ -172,6 +162,12 @@ async function getHostSeries(): Promise<SeriesRecord[]> {
     by:{dt.entity.host},
     interval:1h,
     from:-24h
+    ${zoneFilter}
+    | fieldsAdd
+        cpuCurrent = arrayLast(cpuSeries),
+        memoryCurrent = arrayLast(memorySeries),
+        diskCurrent = arrayLast(diskSeries)
+    | fields dt.entity.host, cpuSeries, memorySeries, diskSeries, cpuCurrent, memoryCurrent, diskCurrent, timeframe, interval
   `);
 }
 
@@ -189,19 +185,16 @@ async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>>
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
-  const [entities, currentRecords, seriesRecords, networkByHost] = await Promise.all([
+  const [entities, seriesRecords, networkByHost] = await Promise.all([
     getHostEntities(managementZone),
-    getCurrentHostMetrics(),
-    getHostSeries(),
+    getHostSeries(managementZone),
     getNetworkSeries(),
   ]);
 
-  const currentByHost = new Map(currentRecords.map((record) => [hostId(record['dt.entity.host']), record]));
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
 
   return entities.map((entity) => {
     const id = hostId(entity.id);
-    const current = currentByHost.get(id);
     const series = seriesByHost.get(id);
     const network = networkByHost.get(id);
 
@@ -209,9 +202,9 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const seriesMemory = numbers(series?.memorySeries);
     const seriesDisk = numbers(series?.diskSeries);
 
-    const currentCpu = numeric(current?.cpu) ?? (seriesCpu.at(-1) ?? 0);
-    const currentMemory = numeric(current?.memory) ?? (seriesMemory.at(-1) ?? 0);
-    const currentDisk = numeric(current?.disk) ?? (seriesDisk.at(-1) ?? 0);
+    const currentCpu = numeric(series?.cpuCurrent) ?? seriesCpu.at(-1) ?? 0;
+    const currentMemory = numeric(series?.memoryCurrent) ?? seriesMemory.at(-1) ?? 0;
+    const currentDisk = numeric(series?.diskCurrent) ?? seriesDisk.at(-1) ?? 0;
 
     const rx = numbers(network?.rx);
     const tx = numbers(network?.tx);
