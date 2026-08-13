@@ -47,7 +47,13 @@ const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['pro
   if (maximum >= 55) return 'Stable';
   return 'Healthy';
 };
-const numericArray = (value: unknown): number[] => Array.isArray(value) ? value.map((item) => typeof item === 'number' ? item : Number(item)).map((item) => Number.isFinite(item) ? item : 0) : [];
+const numericArray = (value: unknown): number[] => Array.isArray(value)
+  ? value.map((item) => {
+      if (typeof item === 'number') return item;
+      const number = Number(item);
+      return Number.isFinite(number) ? number : 0;
+    })
+  : [];
 const numericValue = (value: unknown): number | undefined => {
   const number = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(number) ? number : undefined;
@@ -102,12 +108,12 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
   return executeDql<HostEntityRecord>(query);
 }
 
-async function getHostMetrics(hostIds: string[]): Promise<MetricRecord[]> {
-  if (!hostIds.length) return [];
-  const hostFilter = hostIds.map((id) => `"${escapeDqlString(id)}"`).join(', ');
-
-  // Core capacity metrics are deliberately queried without network metrics.
-  // A missing NIC metric must never prevent CPU, memory and disk from loading.
+async function getHostMetrics(): Promise<MetricRecord[]> {
+  // IMPORTANT: do not filter the timeseries using a JavaScript-generated list of
+  // HOST IDs. In current DQL, the `in` operator expects a subquery in this form,
+  // and passing quoted HOST strings can be rejected by the DQL editor. We already
+  // scope the entity list by Management Zone, so querying all host timeseries and
+  // joining them by the stable dt.entity.host dimension is both valid and robust.
   const primary = await executeDql<MetricRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage),
@@ -116,7 +122,7 @@ async function getHostMetrics(hostIds: string[]): Promise<MetricRecord[]> {
       cpuCurrent = avg(dt.host.cpu.usage, scalar: true),
       memoryCurrent = avg(dt.host.memory.usage, scalar: true),
       diskCurrent = avg(dt.host.disk.used.percent, scalar: true)
-    }, by:{dt.entity.host}, filter:in(dt.entity.host, ${hostFilter}), interval:1h, from:-24h
+    }, by:{dt.entity.host}, interval:1h, from:-24h
   `);
 
   // Network is supplementary. Query it independently because NIC telemetry is
@@ -126,7 +132,7 @@ async function getHostMetrics(hostIds: string[]): Promise<MetricRecord[]> {
       timeseries {
         rx = avg(dt.host.net.nic.link_util_rx),
         tx = avg(dt.host.net.nic.link_util_tx)
-      }, by:{dt.entity.host}, filter:in(dt.entity.host, ${hostFilter}), interval:1h, from:-24h
+      }, by:{dt.entity.host}, interval:1h, from:-24h
     `);
     const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
     return primary.map((record) => ({
@@ -143,8 +149,7 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
   const entities = await getHostEntities(managementZone);
   if (!entities.length) return [];
 
-  const hostIds = entities.map((entity) => String(entity.id ?? '')).filter(Boolean);
-  const metricRecords = await getHostMetrics(hostIds);
+  const metricRecords = await getHostMetrics();
   const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
 
   return entities.map((entity) => {
