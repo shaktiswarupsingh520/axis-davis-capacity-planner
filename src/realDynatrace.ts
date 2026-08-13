@@ -28,16 +28,7 @@ export async function getManagementZones(): Promise<ManagementZoneOption[]> {
     | fields managementZones
     | sort managementZones
   `);
-  return records
-    .flatMap((r) => {
-      const raw = r.managementZones;
-      if (Array.isArray(raw)) return raw.map(String);
-      return raw == null ? [] : [String(raw)];
-    })
-    .map((name) => name.trim())
-    .filter(Boolean)
-    .filter((name, index, names) => names.indexOf(name) === index)
-    .map((name) => ({ name }));
+  return records.map((r) => String(r.managementZones ?? '').trim()).filter(Boolean).map((name) => ({ name }));
 }
 
 const environmentFromHost = (group: string) => {
@@ -209,29 +200,30 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
 
   return entities.map((entity) => {
-    const id = String(entity.id ?? '').trim();
+    const id = hostId(entity.id);
     const current = currentByHost.get(id);
     const series = seriesByHost.get(id);
     const network = networkByHost.get(id);
 
-    const currentCpu = numeric(current?.cpu) ?? 0;
-    const currentMemory = numeric(current?.memory) ?? 0;
-    const currentDisk = numeric(current?.disk) ?? 0;
+    const seriesCpu = numbers(series?.cpuSeries);
+    const seriesMemory = numbers(series?.memorySeries);
+    const seriesDisk = numbers(series?.diskSeries);
 
-    const cpu = numbers(series?.cpuSeries);
-    const memory = numbers(series?.memorySeries);
-    const disk = numbers(series?.diskSeries);
+    const currentCpu = numeric(current?.cpu) ?? (seriesCpu.at(-1) ?? 0);
+    const currentMemory = numeric(current?.memory) ?? (seriesMemory.at(-1) ?? 0);
+    const currentDisk = numeric(current?.disk) ?? (seriesDisk.at(-1) ?? 0);
+
     const rx = numbers(network?.rx);
     const tx = numbers(network?.tx);
 
-    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
+    const points = Math.max(seriesCpu.length, seriesMemory.length, seriesDisk.length, rx.length, tx.length, 1);
     const start = startMs(series?.timeframe);
     const step = intervalMs(series?.interval);
     const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
       timestamp: new Date(start + index * step).toISOString(),
-      cpu: cpu[index] ?? 0,
-      memory: memory[index] ?? 0,
-      disk: disk[index] ?? 0,
+      cpu: seriesCpu[index] ?? 0,
+      memory: seriesMemory[index] ?? 0,
+      disk: seriesDisk[index] ?? 0,
       networkRx: rx[index] ?? 0,
       networkTx: tx[index] ?? 0,
     }));
