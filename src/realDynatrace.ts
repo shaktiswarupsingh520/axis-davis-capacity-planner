@@ -104,26 +104,39 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 
 async function getHostMetrics(hostIds: string[]): Promise<MetricRecord[]> {
   if (!hostIds.length) return [];
+  const hostFilter = hostIds.map((id) => `"${escapeDqlString(id)}"`).join(', ');
 
-  // Query only the hosts already resolved from the selected Management Zone.
-  // Using the same dt.entity.host dimension in the metric query removes the
-  // fragile post-query join that previously caused telemetry to become 0.
-  const hostFilter = hostIds
-    .map((id) => `"${escapeDqlString(id)}"`)
-    .join(', ');
-
-  return executeDql<MetricRecord>(`
+  // Core capacity metrics are deliberately queried without network metrics.
+  // A missing NIC metric must never prevent CPU, memory and disk from loading.
+  const primary = await executeDql<MetricRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage),
       memory = avg(dt.host.memory.usage),
       disk = avg(dt.host.disk.used.percent),
-      rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.nic.link_util_tx),
       cpuCurrent = avg(dt.host.cpu.usage, scalar: true),
       memoryCurrent = avg(dt.host.memory.usage, scalar: true),
       diskCurrent = avg(dt.host.disk.used.percent, scalar: true)
     }, by:{dt.entity.host}, filter:in(dt.entity.host, ${hostFilter}), interval:1h, from:-24h
   `);
+
+  // Network is supplementary. Query it independently because NIC telemetry is
+  // not guaranteed to exist for every host/platform.
+  try {
+    const network = await executeDql<MetricRecord>(`
+      timeseries {
+        rx = avg(dt.host.net.nic.link_util_rx),
+        tx = avg(dt.host.net.nic.link_util_tx)
+      }, by:{dt.entity.host}, filter:in(dt.entity.host, ${hostFilter}), interval:1h, from:-24h
+    `);
+    const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+    return primary.map((record) => ({
+      ...record,
+      rx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.rx,
+      tx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.tx,
+    }));
+  } catch {
+    return primary;
+  }
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
@@ -142,14 +155,10 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const disk = numericArray(metric?.disk);
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
-
     const cpuCurrent = numericValue(metric?.cpuCurrent);
     const memoryCurrent = numericValue(metric?.memoryCurrent);
     const diskCurrent = numericValue(metric?.diskCurrent);
 
-    // Keep the full 24-hour series for charts/forecasting. If a metric has
-    // sparse history, use the scalar average returned by the same DQL query
-    // rather than silently converting a missing series into zero.
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
     const start = timeframeStart(metric?.timeframe);
     const step = intervalToMs(metric?.interval);
