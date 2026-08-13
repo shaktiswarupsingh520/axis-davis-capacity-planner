@@ -2,7 +2,7 @@
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "description": "Axis infrastructure capacity planning with live Dynatrace data.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
