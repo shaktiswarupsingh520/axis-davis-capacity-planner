@@ -59,10 +59,7 @@ const numericValue = (value: unknown): number | undefined => {
 };
 
 const numericArray = (value: unknown): number[] => {
-  if (Array.isArray(value)) {
-    return value.map((item) => numericValue(item) ?? 0);
-  }
-  // Keep this tolerant of SDK serialization wrappers such as { values: [...] }.
+  if (Array.isArray(value)) return value.map((item) => numericValue(item) ?? 0);
   if (value && typeof value === 'object' && 'values' in value) {
     return numericArray((value as { values?: unknown }).values);
   }
@@ -72,7 +69,6 @@ const numericArray = (value: unknown): number[] => {
 
 const intervalToMs = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
-    // DQL duration values can be serialized as nanoseconds by API layers.
     if (value > 1_000_000_000) return value / 1_000_000;
     return value;
   }
@@ -98,6 +94,9 @@ interface MetricRecord {
   cpu?: unknown;
   memory?: unknown;
   disk?: unknown;
+  cpuSeries?: unknown;
+  memorySeries?: unknown;
+  diskSeries?: unknown;
   rx?: unknown;
   tx?: unknown;
   timeframe?: unknown;
@@ -124,10 +123,9 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 }
 
 async function getHostMetrics(): Promise<MetricRecord[]> {
-  // Use the same DQL shape that is verified in Dynatrace Notebooks: a scalar
-  // current value plus a 24-hour series for each host. Keeping the scalar fields
-  // named cpu/memory/disk also avoids losing the current value when the SDK
-  // serializes a timeseries aggregation.
+  // The scalar:true fields mirror the verified notebook query and provide a
+  // reliable current value. The non-scalar fields preserve the 24-hour series
+  // used by the forecast and host-detail pages.
   const primary = await executeDql<MetricRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage, scalar:true),
@@ -149,9 +147,6 @@ async function getHostMetrics(): Promise<MetricRecord[]> {
     const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
     return primary.map((record) => ({
       ...record,
-      cpu: numericValue(record.cpu) ?? numericArray(record.cpuSeries),
-      memory: numericValue(record.memory) ?? numericArray(record.memorySeries),
-      disk: numericValue(record.disk) ?? numericArray(record.diskSeries),
       rx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.rx,
       tx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.tx,
     }));
@@ -170,14 +165,16 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
   return entities.map((entity) => {
     const id = String(entity.id ?? '').trim();
     const metric = metricsByHost.get(id);
-    const cpu = numericArray(metric?.cpu);
-    const memory = numericArray(metric?.memory);
-    const disk = numericArray(metric?.disk);
+
+    const cpuSeries = numericArray(metric?.cpuSeries);
+    const memorySeries = numericArray(metric?.memorySeries);
+    const diskSeries = numericArray(metric?.diskSeries);
+    const cpu = cpuSeries.length ? cpuSeries : numericArray(metric?.cpu);
+    const memory = memorySeries.length ? memorySeries : numericArray(metric?.memory);
+    const disk = diskSeries.length ? diskSeries : numericArray(metric?.disk);
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
 
-    // Scalar:true produces one current value. Series aggregations produce the
-    // 24-hour arrays. Normalize both into the TelemetryPoint model used by the UI.
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
     const start = timeframeStart(metric?.timeframe);
     const step = intervalToMs(metric?.interval);
