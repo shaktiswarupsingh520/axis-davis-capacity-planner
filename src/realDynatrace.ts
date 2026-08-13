@@ -28,7 +28,16 @@ export async function getManagementZones(): Promise<ManagementZoneOption[]> {
     | fields managementZones
     | sort managementZones
   `);
-  return records.map((r) => String(r.managementZones ?? '').trim()).filter(Boolean).map((name) => ({ name }));
+  return records
+    .flatMap((r) => {
+      const raw = r.managementZones;
+      if (Array.isArray(raw)) return raw.map(String);
+      return raw == null ? [] : [String(raw)];
+    })
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .filter((name, index, names) => names.indexOf(name) === index)
+    .map((name) => ({ name }));
 }
 
 const environmentFromHost = (group: string) => {
@@ -83,7 +92,7 @@ const numbers = (value: unknown): number[] => {
 };
 
 const hostId = (value: unknown): string => {
-  if (Array.isArray(value)) return String(value[0] ?? '').trim();
+  if (Array.isArray(value)) return hostId(value[0]);
   if (value && typeof value === 'object') {
     const v = value as Record<string, unknown>;
     return hostId(v.value ?? v.values ?? v.data ?? v.id);
@@ -107,11 +116,15 @@ const startMs = (value: unknown) => {
   return Date.now() - 24 * 60 * 60 * 1000;
 };
 
+interface HostEntityRecord {
+  id?: unknown;
+  'entity.name'?: unknown;
+  hostGroupName?: unknown;
+  managementZones?: unknown;
+}
+
 interface CurrentHostRecord {
   'dt.entity.host'?: unknown;
-  'host.entity.name'?: unknown;
-  'host.hostGroupName'?: unknown;
-  'host.managementZones'?: unknown;
   cpu?: unknown;
   memory?: unknown;
   disk?: unknown;
@@ -126,6 +139,26 @@ interface SeriesRecord {
   interval?: unknown;
 }
 
+const escapeDqlString = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
+  const selected = managementZone && managementZone !== 'All Management Zones';
+  const query = selected
+    ? `
+      fetch dt.entity.host
+      | expand managementZones
+      | filter managementZones == "${escapeDqlString(managementZone as string)}"
+      | fields id, entity.name, hostGroupName, managementZones
+      | dedup id
+    `
+    : `
+      fetch dt.entity.host
+      | fields id, entity.name, hostGroupName, managementZones
+      | dedup id
+    `;
+  return executeDql<HostEntityRecord>(query);
+}
+
 async function getCurrentHostMetrics(): Promise<CurrentHostRecord[]> {
   return executeDql<CurrentHostRecord>(`
     timeseries {
@@ -134,14 +167,7 @@ async function getCurrentHostMetrics(): Promise<CurrentHostRecord[]> {
       disk = avg(dt.host.disk.used.percent, scalar:true)
     },
     by:{dt.entity.host}
-    | lookup [
-        fetch dt.entity.host
-        | fields id, entity.name, hostGroupName, managementZones
-      ],
-      sourceField:dt.entity.host,
-      lookupField:id,
-      prefix:"host.",
-      fields:{entity.name, hostGroupName, managementZones}
+    | fields dt.entity.host, cpu, memory, disk
   `);
 }
 
@@ -172,71 +198,65 @@ async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>>
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
-  const [currentRecords, seriesRecords, networkByHost] = await Promise.all([
+  const [entities, currentRecords, seriesRecords, networkByHost] = await Promise.all([
+    getHostEntities(managementZone),
     getCurrentHostMetrics(),
     getHostSeries(),
     getNetworkSeries(),
   ]);
 
-  const seriesByHost = new Map(seriesRecords.map((r) => [hostId(r['dt.entity.host']), r]));
-  const selected = managementZone && managementZone !== 'All Management Zones' ? managementZone : undefined;
+  const currentByHost = new Map(currentRecords.map((record) => [hostId(record['dt.entity.host']), record]));
+  const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
 
-  return currentRecords
-    .filter((record) => {
-      if (!selected) return true;
-      const zones = Array.isArray(record['host.managementZones'])
-        ? record['host.managementZones'].map(String)
-        : [String(record['host.managementZones'] ?? '')];
-      return zones.includes(selected);
-    })
-    .map((record) => {
-      const id = hostId(record['dt.entity.host']);
-      const series = seriesByHost.get(id);
-      const network = networkByHost.get(id);
+  return entities.map((entity) => {
+    const id = String(entity.id ?? '').trim();
+    const current = currentByHost.get(id);
+    const series = seriesByHost.get(id);
+    const network = networkByHost.get(id);
 
-      const currentCpu = numeric(record.cpu) ?? 0;
-      const currentMemory = numeric(record.memory) ?? 0;
-      const currentDisk = numeric(record.disk) ?? 0;
+    const currentCpu = numeric(current?.cpu) ?? 0;
+    const currentMemory = numeric(current?.memory) ?? 0;
+    const currentDisk = numeric(current?.disk) ?? 0;
 
-      const cpu = numbers(series?.cpuSeries);
-      const memory = numbers(series?.memorySeries);
-      const disk = numbers(series?.diskSeries);
-      const rx = numbers(network?.rx);
-      const tx = numbers(network?.tx);
+    const cpu = numbers(series?.cpuSeries);
+    const memory = numbers(series?.memorySeries);
+    const disk = numbers(series?.diskSeries);
+    const rx = numbers(network?.rx);
+    const tx = numbers(network?.tx);
 
-      const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
-      const start = startMs(series?.timeframe);
-      const step = intervalMs(series?.interval);
-      const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
-        timestamp: new Date(start + index * step).toISOString(),
-        cpu: cpu[index] ?? 0,
-        memory: memory[index] ?? 0,
-        disk: disk[index] ?? 0,
-        networkRx: rx[index] ?? 0,
-        networkTx: tx[index] ?? 0,
-      }));
+    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
+    const start = startMs(series?.timeframe);
+    const step = intervalMs(series?.interval);
+    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
+      timestamp: new Date(start + index * step).toISOString(),
+      cpu: cpu[index] ?? 0,
+      memory: memory[index] ?? 0,
+      disk: disk[index] ?? 0,
+      networkRx: rx[index] ?? 0,
+      networkTx: tx[index] ?? 0,
+    }));
 
-      const latest = telemetry[telemetry.length - 1];
-      latest.cpu = currentCpu;
-      latest.memory = currentMemory;
-      latest.disk = currentDisk;
+    const latest = telemetry[telemetry.length - 1];
+    latest.cpu = currentCpu;
+    latest.memory = currentMemory;
+    latest.disk = currentDisk;
 
-      const name = String(record['host.entity.name'] ?? id ?? 'Unknown host');
-      const group = String(record['host.hostGroupName'] ?? '').trim();
-      const zones = Array.isArray(record['host.managementZones'])
-        ? record['host.managementZones'].map(String)
-        : [String(record['host.managementZones'] ?? '')].filter(Boolean);
+    const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
+    const group = String(entity.hostGroupName ?? '').trim();
+    const zones = Array.isArray(entity.managementZones)
+      ? entity.managementZones.map(String)
+      : [String(entity.managementZones ?? '')].filter(Boolean);
 
-      return {
-        id,
-        name,
-        environment: environmentFromHost(group),
-        application: group || 'Unclassified host group',
-        profile: statusFromMetrics(currentCpu, currentMemory, currentDisk),
-        managementZones: zones,
-        telemetry,
-      } satisfies Host;
-    });
+    return {
+      id,
+      name,
+      environment: environmentFromHost(group),
+      application: group || 'Unclassified host group',
+      profile: statusFromMetrics(currentCpu, currentMemory, currentDisk),
+      managementZones: zones,
+      telemetry,
+    } satisfies Host;
+  });
 }
 
 export const dynatraceDataProvider = { getHosts, getManagementZones };
