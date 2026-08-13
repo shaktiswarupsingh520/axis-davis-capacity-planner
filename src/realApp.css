@@ -1,0 +1,4 @@
+.loading-bar{display:flex;align-items:center;gap:8px;margin:12px 24px 0;padding:10px 14px;border:1px solid var(--border,#d9dee8);border-radius:10px;background:var(--panel,#fff);font-size:13px;color:var(--muted,#667085)}
+.pdf-report-button{position:fixed;right:24px;bottom:24px;z-index:20;border:0;border-radius:10px;padding:12px 16px;font-weight:700;font-size:13px;background:#111827;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18);cursor:pointer}
+.pdf-report-button:hover{transform:translateY(-1px)}
+.notice{display:flex;align-items:center;gap:10px;margin:16px 24px 0;padding:12px 14px;border:1px solid #f0c36b;border-radius:10px;background:#fff8e8;color:#7a4d00;font-size:13px}
