@@ -169,9 +169,12 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const cpuSeries = numericArray(metric?.cpuSeries);
     const memorySeries = numericArray(metric?.memorySeries);
     const diskSeries = numericArray(metric?.diskSeries);
-    const cpu = cpuSeries.length ? cpuSeries : numericArray(metric?.cpu);
-    const memory = memorySeries.length ? memorySeries : numericArray(metric?.memory);
-    const disk = diskSeries.length ? diskSeries : numericArray(metric?.disk);
+    const cpuScalar = numericValue(metric?.cpu);
+    const memoryScalar = numericValue(metric?.memory);
+    const diskScalar = numericValue(metric?.disk);
+    const cpu = cpuSeries;
+    const memory = memorySeries;
+    const disk = diskSeries;
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
 
@@ -188,6 +191,12 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     }));
 
     const latest = telemetry[telemetry.length - 1];
+    if (latest) {
+      if (cpuScalar !== undefined) latest.cpu = cpuScalar;
+      if (memoryScalar !== undefined) latest.memory = memoryScalar;
+      if (diskScalar !== undefined) latest.disk = diskScalar;
+    }
+
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
     const hostGroup = String(entity.hostGroupName ?? '').trim();
     const managementZones = Array.isArray(entity.managementZones)
