@@ -8,7 +8,7 @@ const escapeDqlString = (value: string) => value.replace(/\\/g, '\\\\').replace(
 async function executeDql<T extends Record<string, unknown>>(query: string): Promise<T[]> {
   const response = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: 5000 } });
   let result: QueryResult | undefined = response.result as QueryResult | undefined;
-  let token = response.requestToken;
+  const token = response.requestToken;
   let state = response.state;
   for (let attempt = 0; !result && token && attempt < 30; attempt += 1) {
     const polled = await queryExecutionClient.queryPoll({ requestToken: token, requestTimeoutMilliseconds: 30000 });
@@ -39,6 +39,7 @@ const environmentFromHost = (hostGroupName: string) => {
   if (/\b(prod|production|prd)\b/.test(value)) return 'Production';
   return 'Unknown';
 };
+
 const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['profile'] => {
   const maximum = Math.max(cpu, memory, disk);
   if (maximum >= 90) return 'Over Capacity';
@@ -47,24 +48,41 @@ const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['pro
   if (maximum >= 55) return 'Stable';
   return 'Healthy';
 };
-const numericArray = (value: unknown): number[] => Array.isArray(value)
-  ? value.map((item) => {
-      if (typeof item === 'number') return item;
-      const number = Number(item);
-      return Number.isFinite(number) ? number : 0;
-    })
-  : [];
+
 const numericValue = (value: unknown): number | undefined => {
-  const number = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(number) ? number : undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+  return undefined;
 };
+
+const numericArray = (value: unknown): number[] => {
+  if (Array.isArray(value)) {
+    return value.map((item) => numericValue(item) ?? 0);
+  }
+  // Keep this tolerant of SDK serialization wrappers such as { values: [...] }.
+  if (value && typeof value === 'object' && 'values' in value) {
+    return numericArray((value as { values?: unknown }).values);
+  }
+  const scalar = numericValue(value);
+  return scalar === undefined ? [] : [scalar];
+};
+
 const intervalToMs = (value: unknown) => {
-  const match = String(value ?? '1h').match(/^(\d+)\s*([smhd])$/i);
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // DQL duration values can be serialized as nanoseconds by API layers.
+    if (value > 1_000_000_000) return value / 1_000_000;
+    return value;
+  }
+  const match = String(value ?? '1h').match(/^(\d+(?:\.\d+)?)\s*([smhd])$/i);
   if (!match) return 60 * 60 * 1000;
   const amount = Number(match[1]);
   const unit = match[2].toLowerCase();
   return amount * ({ s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit] ?? 3_600_000);
 };
+
 const timeframeStart = (value: unknown) => {
   if (value && typeof value === 'object' && 'start' in value) {
     const start = (value as { start?: unknown }).start;
@@ -82,9 +100,6 @@ interface MetricRecord {
   disk?: unknown;
   rx?: unknown;
   tx?: unknown;
-  cpuCurrent?: unknown;
-  memoryCurrent?: unknown;
-  diskCurrent?: unknown;
   timeframe?: unknown;
   interval?: unknown;
 }
@@ -109,24 +124,21 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 }
 
 async function getHostMetrics(): Promise<MetricRecord[]> {
-  // IMPORTANT: do not filter the timeseries using a JavaScript-generated list of
-  // HOST IDs. In current DQL, the `in` operator expects a subquery in this form,
-  // and passing quoted HOST strings can be rejected by the DQL editor. We already
-  // scope the entity list by Management Zone, so querying all host timeseries and
-  // joining them by the stable dt.entity.host dimension is both valid and robust.
+  // Use the same DQL shape that is verified in Dynatrace Notebooks: a scalar
+  // current value plus a 24-hour series for each host. Keeping the scalar fields
+  // named cpu/memory/disk also avoids losing the current value when the SDK
+  // serializes a timeseries aggregation.
   const primary = await executeDql<MetricRecord>(`
     timeseries {
-      cpu = avg(dt.host.cpu.usage),
-      memory = avg(dt.host.memory.usage),
-      disk = avg(dt.host.disk.used.percent),
-      cpuCurrent = avg(dt.host.cpu.usage, scalar: true),
-      memoryCurrent = avg(dt.host.memory.usage, scalar: true),
-      diskCurrent = avg(dt.host.disk.used.percent, scalar: true)
+      cpu = avg(dt.host.cpu.usage, scalar:true),
+      memory = avg(dt.host.memory.usage, scalar:true),
+      disk = avg(dt.host.disk.used.percent, scalar:true),
+      cpuSeries = avg(dt.host.cpu.usage),
+      memorySeries = avg(dt.host.memory.usage),
+      diskSeries = avg(dt.host.disk.used.percent)
     }, by:{dt.entity.host}, interval:1h, from:-24h
   `);
 
-  // Network is supplementary. Query it independently because NIC telemetry is
-  // not guaranteed to exist for every host/platform.
   try {
     const network = await executeDql<MetricRecord>(`
       timeseries {
@@ -134,11 +146,14 @@ async function getHostMetrics(): Promise<MetricRecord[]> {
         tx = avg(dt.host.net.nic.link_util_tx)
       }, by:{dt.entity.host}, interval:1h, from:-24h
     `);
-    const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+    const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
     return primary.map((record) => ({
       ...record,
-      rx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.rx,
-      tx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.tx,
+      cpu: numericValue(record.cpu) ?? numericArray(record.cpuSeries),
+      memory: numericValue(record.memory) ?? numericArray(record.memorySeries),
+      disk: numericValue(record.disk) ?? numericArray(record.diskSeries),
+      rx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.rx,
+      tx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.tx,
     }));
   } catch {
     return primary;
@@ -150,28 +165,27 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
   if (!entities.length) return [];
 
   const metricRecords = await getHostMetrics();
-  const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+  const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
 
   return entities.map((entity) => {
-    const id = String(entity.id ?? '');
+    const id = String(entity.id ?? '').trim();
     const metric = metricsByHost.get(id);
     const cpu = numericArray(metric?.cpu);
     const memory = numericArray(metric?.memory);
     const disk = numericArray(metric?.disk);
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
-    const cpuCurrent = numericValue(metric?.cpuCurrent);
-    const memoryCurrent = numericValue(metric?.memoryCurrent);
-    const diskCurrent = numericValue(metric?.diskCurrent);
 
+    // Scalar:true produces one current value. Series aggregations produce the
+    // 24-hour arrays. Normalize both into the TelemetryPoint model used by the UI.
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
     const start = timeframeStart(metric?.timeframe);
     const step = intervalToMs(metric?.interval);
     const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
       timestamp: new Date(start + index * step).toISOString(),
-      cpu: cpu[index] ?? (index === points - 1 ? cpuCurrent ?? 0 : 0),
-      memory: memory[index] ?? (index === points - 1 ? memoryCurrent ?? 0 : 0),
-      disk: disk[index] ?? (index === points - 1 ? diskCurrent ?? 0 : 0),
+      cpu: cpu[index] ?? 0,
+      memory: memory[index] ?? 0,
+      disk: disk[index] ?? 0,
       networkRx: rx[index] ?? 0,
       networkTx: tx[index] ?? 0,
     }));
