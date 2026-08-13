@@ -123,17 +123,35 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 }
 
 async function getHostMetrics(): Promise<MetricRecord[]> {
-  const primary = await executeDql<MetricRecord>(`
-    timeseries {
-      cpuSeries = avg(dt.host.cpu.usage),
-      memorySeries = avg(dt.host.memory.usage),
-      diskSeries = avg(dt.host.disk.used.percent)
-    },
-    by:{dt.entity.host},
-    interval:1h,
-    from:-24h
-    | fieldsAdd cpuCurrent=arrayLast(cpuSeries), memoryCurrent=arrayLast(memorySeries), diskCurrent=arrayLast(diskSeries)
-  `);
+  const [current, series] = await Promise.all([
+    executeDql<MetricRecord>(`
+      timeseries {
+        cpuCurrent = avg(dt.host.cpu.usage, scalar:true),
+        memoryCurrent = avg(dt.host.memory.usage, scalar:true),
+        diskCurrent = avg(dt.host.disk.used.percent, scalar:true)
+      },
+      by:{dt.entity.host},
+      from:-24h
+    `),
+    executeDql<MetricRecord>(`
+      timeseries {
+        cpuSeries = avg(dt.host.cpu.usage),
+        memorySeries = avg(dt.host.memory.usage),
+        diskSeries = avg(dt.host.disk.used.percent)
+      },
+      by:{dt.entity.host},
+      interval:1h,
+      from:-24h
+    `),
+  ]);
+
+  const currentByHost = new Map(current.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
+  const merged = series.map((record) => ({
+    ...record,
+    cpuCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.cpuCurrent,
+    memoryCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.memoryCurrent,
+    diskCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.diskCurrent,
+  }));
 
   try {
     const network = await executeDql<MetricRecord>(`
@@ -146,13 +164,13 @@ async function getHostMetrics(): Promise<MetricRecord[]> {
       from:-24h
     `);
     const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
-    return primary.map((record) => ({
+    return merged.map((record) => ({
       ...record,
       rx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.rx,
       tx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.tx,
     }));
   } catch {
-    return primary;
+    return merged;
   }
 }
 
@@ -173,9 +191,9 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const cpuCurrent = numericValue(metric?.cpuCurrent);
     const memoryCurrent = numericValue(metric?.memoryCurrent);
     const diskCurrent = numericValue(metric?.diskCurrent);
-    const cpu = cpuSeries;
-    const memory = memorySeries;
-    const disk = diskSeries;
+    const cpu = cpuSeries.length ? cpuSeries : (cpuCurrent === undefined ? [] : [cpuCurrent]);
+    const memory = memorySeries.length ? memorySeries : (memoryCurrent === undefined ? [] : [memoryCurrent]);
+    const disk = diskSeries.length ? diskSeries : (diskCurrent === undefined ? [] : [diskCurrent]);
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
 
