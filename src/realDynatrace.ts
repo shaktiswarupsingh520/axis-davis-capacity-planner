@@ -94,13 +94,16 @@ interface MetricRecord {
   cpuSeries?: unknown;
   memorySeries?: unknown;
   diskSeries?: unknown;
-  cpuCurrent?: unknown;
-  memoryCurrent?: unknown;
-  diskCurrent?: unknown;
   rx?: unknown;
   tx?: unknown;
   timeframe?: unknown;
   interval?: unknown;
+}
+interface CurrentMetricRecord {
+  'dt.entity.host'?: unknown;
+  cpu?: unknown;
+  memory?: unknown;
+  disk?: unknown;
 }
 
 async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
@@ -122,36 +125,31 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
   return executeDql<HostEntityRecord>(query);
 }
 
-async function getHostMetrics(): Promise<MetricRecord[]> {
-  const [current, series] = await Promise.all([
-    executeDql<MetricRecord>(`
-      timeseries {
-        cpuCurrent = avg(dt.host.cpu.usage, scalar:true),
-        memoryCurrent = avg(dt.host.memory.usage, scalar:true),
-        diskCurrent = avg(dt.host.disk.used.percent, scalar:true)
-      },
-      by:{dt.entity.host},
-      from:-24h
-    `),
-    executeDql<MetricRecord>(`
-      timeseries {
-        cpuSeries = avg(dt.host.cpu.usage),
-        memorySeries = avg(dt.host.memory.usage),
-        diskSeries = avg(dt.host.disk.used.percent)
-      },
-      by:{dt.entity.host},
-      interval:1h,
-      from:-24h
-    `),
-  ]);
+async function getCurrentHostMetrics(): Promise<CurrentMetricRecord[]> {
+  // This is intentionally the same scalar:true query verified in the
+  // Dynatrace Notebook. scalar:true returns plain numeric fields.
+  return executeDql<CurrentMetricRecord>(`
+    timeseries {
+      cpu = avg(dt.host.cpu.usage, scalar:true),
+      memory = avg(dt.host.memory.usage, scalar:true),
+      disk = avg(dt.host.disk.used.percent, scalar:true)
+    },
+    by:{dt.entity.host}
+  `);
+}
 
-  const currentByHost = new Map(current.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
-  const merged = series.map((record) => ({
-    ...record,
-    cpuCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.cpuCurrent,
-    memoryCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.memoryCurrent,
-    diskCurrent: currentByHost.get(String(record['dt.entity.host'] ?? '').trim())?.diskCurrent,
-  }));
+async function getHostMetrics(): Promise<MetricRecord[]> {
+  // Keep the non-scalar 24h series separate for forecasting/detail charts.
+  const primary = await executeDql<MetricRecord>(`
+    timeseries {
+      cpuSeries = avg(dt.host.cpu.usage),
+      memorySeries = avg(dt.host.memory.usage),
+      diskSeries = avg(dt.host.disk.used.percent)
+    },
+    by:{dt.entity.host},
+    interval:1h,
+    from:-24h
+  `);
 
   try {
     const network = await executeDql<MetricRecord>(`
@@ -164,13 +162,13 @@ async function getHostMetrics(): Promise<MetricRecord[]> {
       from:-24h
     `);
     const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
-    return merged.map((record) => ({
+    return primary.map((record) => ({
       ...record,
       rx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.rx,
       tx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.tx,
     }));
   } catch {
-    return merged;
+    return primary;
   }
 }
 
@@ -178,22 +176,28 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
   const entities = await getHostEntities(managementZone);
   if (!entities.length) return [];
 
-  const metricRecords = await getHostMetrics();
+  const [metricRecords, currentMetricRecords] = await Promise.all([
+    getHostMetrics(),
+    getCurrentHostMetrics(),
+  ]);
+
   const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
+  const currentMetricsByHost = new Map(currentMetricRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
 
   return entities.map((entity) => {
     const id = String(entity.id ?? '').trim();
     const metric = metricsByHost.get(id);
+    const currentMetric = currentMetricsByHost.get(id);
 
     const cpuSeries = numericArray(metric?.cpuSeries);
     const memorySeries = numericArray(metric?.memorySeries);
     const diskSeries = numericArray(metric?.diskSeries);
-    const cpuCurrent = numericValue(metric?.cpuCurrent);
-    const memoryCurrent = numericValue(metric?.memoryCurrent);
-    const diskCurrent = numericValue(metric?.diskCurrent);
-    const cpu = cpuSeries.length ? cpuSeries : (cpuCurrent === undefined ? [] : [cpuCurrent]);
-    const memory = memorySeries.length ? memorySeries : (memoryCurrent === undefined ? [] : [memoryCurrent]);
-    const disk = diskSeries.length ? diskSeries : (diskCurrent === undefined ? [] : [diskCurrent]);
+    const cpuScalar = numericValue(currentMetric?.cpu);
+    const memoryScalar = numericValue(currentMetric?.memory);
+    const diskScalar = numericValue(currentMetric?.disk);
+    const cpu = cpuSeries.length ? cpuSeries : cpuScalar === undefined ? [] : [cpuScalar];
+    const memory = memorySeries.length ? memorySeries : memoryScalar === undefined ? [] : [memoryScalar];
+    const disk = diskSeries.length ? diskSeries : diskScalar === undefined ? [] : [diskScalar];
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
 
@@ -211,9 +215,9 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
 
     const latest = telemetry[telemetry.length - 1];
     if (latest) {
-      if (cpuCurrent !== undefined) latest.cpu = cpuCurrent;
-      if (memoryCurrent !== undefined) latest.memory = memoryCurrent;
-      if (diskCurrent !== undefined) latest.disk = diskCurrent;
+      if (cpuScalar !== undefined) latest.cpu = cpuScalar;
+      if (memoryScalar !== undefined) latest.memory = memoryScalar;
+      if (diskScalar !== undefined) latest.disk = diskScalar;
     }
 
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
