@@ -5,7 +5,7 @@ export interface ManagementZoneOption { name: string; }
 interface QueryResult { records?: Array<Record<string, unknown> | null>; }
 const escapeDqlString = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-async function executeDql<T extends Record<string, unknown>>(query: string): Promise<T[]> {
+async function executeDql<T>(query: string): Promise<T[]> {
   const response = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: 5000 } });
   let result: QueryResult | undefined = response.result as QueryResult | undefined;
   const token = response.requestToken;
@@ -17,7 +17,7 @@ async function executeDql<T extends Record<string, unknown>>(query: string): Pro
     if (!result && state === 'RUNNING') await new Promise((resolve) => setTimeout(resolve, 300));
   }
   if (!result) throw new Error(`Dynatrace DQL query did not return a result (state: ${state}).`);
-  return (result.records ?? []).filter((record): record is T => Boolean(record));
+  return (result.records ?? []).filter(Boolean) as T[];
 }
 
 export async function getManagementZones(): Promise<ManagementZoneOption[]> {
