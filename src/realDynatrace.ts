@@ -48,6 +48,10 @@ const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['pro
   return 'Healthy';
 };
 const numericArray = (value: unknown): number[] => Array.isArray(value) ? value.map((item) => typeof item === 'number' ? item : Number(item)).map((item) => Number.isFinite(item) ? item : 0) : [];
+const numericValue = (value: unknown): number | undefined => {
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : undefined;
+};
 const intervalToMs = (value: unknown) => {
   const match = String(value ?? '1h').match(/^(\d+)\s*([smhd])$/i);
   if (!match) return 60 * 60 * 1000;
@@ -65,7 +69,19 @@ const timeframeStart = (value: unknown) => {
 };
 
 interface HostEntityRecord { id?: unknown; 'entity.name'?: unknown; hostGroupName?: unknown; managementZones?: unknown; tags?: unknown; }
-interface MetricRecord { 'dt.entity.host'?: unknown; cpu?: unknown; memory?: unknown; disk?: unknown; rx?: unknown; tx?: unknown; timeframe?: unknown; interval?: unknown; }
+interface MetricRecord {
+  'dt.entity.host'?: unknown;
+  cpu?: unknown;
+  memory?: unknown;
+  disk?: unknown;
+  rx?: unknown;
+  tx?: unknown;
+  cpuCurrent?: unknown;
+  memoryCurrent?: unknown;
+  diskCurrent?: unknown;
+  timeframe?: unknown;
+  interval?: unknown;
+}
 
 async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
   const selected = managementZone && managementZone !== 'All Management Zones';
@@ -86,34 +102,38 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
   return executeDql<HostEntityRecord>(query);
 }
 
-async function getHostMetrics(): Promise<MetricRecord[]> {
-  const primary = await executeDql<MetricRecord>(`
+async function getHostMetrics(hostIds: string[]): Promise<MetricRecord[]> {
+  if (!hostIds.length) return [];
+
+  // Query only the hosts already resolved from the selected Management Zone.
+  // Using the same dt.entity.host dimension in the metric query removes the
+  // fragile post-query join that previously caused telemetry to become 0.
+  const hostFilter = hostIds
+    .map((id) => `"${escapeDqlString(id)}"`)
+    .join(', ');
+
+  return executeDql<MetricRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage),
       memory = avg(dt.host.memory.usage),
-      disk = avg(dt.host.disk.used.percent)
-    }, by:{dt.entity.host}, interval:1h, from:-24h
+      disk = avg(dt.host.disk.used.percent),
+      rx = avg(dt.host.net.nic.link_util_rx),
+      tx = avg(dt.host.net.nic.link_util_tx),
+      cpuCurrent = avg(dt.host.cpu.usage, scalar: true),
+      memoryCurrent = avg(dt.host.memory.usage, scalar: true),
+      diskCurrent = avg(dt.host.disk.used.percent, scalar: true)
+    }, by:{dt.entity.host}, filter:in(dt.entity.host, ${hostFilter}), interval:1h, from:-24h
   `);
-  let network: MetricRecord[] = [];
-  try {
-    network = await executeDql<MetricRecord>(`
-      timeseries {
-        rx = avg(dt.host.net.nic.link_util_rx),
-        tx = avg(dt.host.net.nic.link_util_tx)
-      }, by:{dt.entity.host}, interval:1h, from:-24h
-    `);
-  } catch {
-    // Network metrics are optional; CPU/memory/disk remain usable.
-  }
-  const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
-  return primary.map((record) => ({ ...record, rx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.rx, tx: networkByHost.get(String(record['dt.entity.host'] ?? ''))?.tx }));
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
   const entities = await getHostEntities(managementZone);
   if (!entities.length) return [];
-  const metricRecords = await getHostMetrics();
+
+  const hostIds = entities.map((entity) => String(entity.id ?? '')).filter(Boolean);
+  const metricRecords = await getHostMetrics(hostIds);
   const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? ''), record]));
+
   return entities.map((entity) => {
     const id = String(entity.id ?? '');
     const metric = metricsByHost.get(id);
@@ -122,15 +142,42 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const disk = numericArray(metric?.disk);
     const rx = numericArray(metric?.rx);
     const tx = numericArray(metric?.tx);
+
+    const cpuCurrent = numericValue(metric?.cpuCurrent);
+    const memoryCurrent = numericValue(metric?.memoryCurrent);
+    const diskCurrent = numericValue(metric?.diskCurrent);
+
+    // Keep the full 24-hour series for charts/forecasting. If a metric has
+    // sparse history, use the scalar average returned by the same DQL query
+    // rather than silently converting a missing series into zero.
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
     const start = timeframeStart(metric?.timeframe);
     const step = intervalToMs(metric?.interval);
-    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({ timestamp: new Date(start + index * step).toISOString(), cpu: cpu[index] ?? 0, memory: memory[index] ?? 0, disk: disk[index] ?? 0, networkRx: rx[index] ?? 0, networkTx: tx[index] ?? 0 }));
+    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
+      timestamp: new Date(start + index * step).toISOString(),
+      cpu: cpu[index] ?? (index === points - 1 ? cpuCurrent ?? 0 : 0),
+      memory: memory[index] ?? (index === points - 1 ? memoryCurrent ?? 0 : 0),
+      disk: disk[index] ?? (index === points - 1 ? diskCurrent ?? 0 : 0),
+      networkRx: rx[index] ?? 0,
+      networkTx: tx[index] ?? 0,
+    }));
+
     const latest = telemetry[telemetry.length - 1];
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
     const hostGroup = String(entity.hostGroupName ?? '').trim();
-    const managementZones = Array.isArray(entity.managementZones) ? entity.managementZones.map(String) : [String(entity.managementZones ?? '')].filter(Boolean);
-    return { id, name, environment: environmentFromHost(hostGroup), application: hostGroup || 'Unclassified host group', profile: statusFromMetrics(latest.cpu, latest.memory, latest.disk), managementZones, telemetry } satisfies Host;
+    const managementZones = Array.isArray(entity.managementZones)
+      ? entity.managementZones.map(String)
+      : [String(entity.managementZones ?? '')].filter(Boolean);
+
+    return {
+      id,
+      name,
+      environment: environmentFromHost(hostGroup),
+      application: hostGroup || 'Unclassified host group',
+      profile: statusFromMetrics(latest.cpu, latest.memory, latest.disk),
+      managementZones,
+      telemetry,
+    } satisfies Host;
   });
 }
 
