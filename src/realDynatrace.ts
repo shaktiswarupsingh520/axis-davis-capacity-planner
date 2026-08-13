@@ -104,7 +104,10 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     ? escapeDqlString(managementZone)
     : undefined;
 
-  const entityFilter = escapedZone
+  // Query telemetry first, then enrich each host directly from the entity store.
+  // This avoids an inner lookup dropping telemetry rows when the entity lookup
+  // and metric result sets are evaluated in different scopes.
+  const zoneFilter = escapedZone
     ? `| filter iAny(managementZones[] == "${escapedZone}")`
     : '';
 
@@ -116,14 +119,13 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
       rx = avg(dt.host.net.nic.link_util_rx),
       tx = avg(dt.host.net.nic.link_util_tx)
     }, by:{dt.entity.host}, interval:1h, from:-24h
-    | lookup [
-        fetch dt.entity.host
-        ${entityFilter}
-        | fields id, entity.name, hostGroupName, managementZones, tags
-      ], sourceField:dt.entity.host, lookupField:id,
-      fields:{entity.name, hostGroupName, managementZones, tags}
+    | fieldsAdd managementZones = entityAttr(dt.entity.host, "managementZones")
+    | fieldsAdd hostName = entityName(dt.entity.host)
+    | fieldsAdd hostGroupName = entityAttr(dt.entity.host, "hostGroupName")
+    | fieldsAdd tags = entityAttr(dt.entity.host, "tags")
+    ${zoneFilter}
     | fieldsAdd cpuCurrent=arrayLast(cpu), memoryCurrent=arrayLast(memory), diskCurrent=arrayLast(disk), rxCurrent=arrayLast(rx), txCurrent=arrayLast(tx)
-    | fields dt.entity.host, entity.name, hostGroupName, managementZones, tags, timeframe, interval, cpu, memory, disk, rx, tx, cpuCurrent, memoryCurrent, diskCurrent, rxCurrent, txCurrent
+    | fields dt.entity.host, hostName, hostGroupName, managementZones, tags, timeframe, interval, cpu, memory, disk, rx, tx, cpuCurrent, memoryCurrent, diskCurrent, rxCurrent, txCurrent
   `;
 
   const records = await executeDql<Record<string, unknown>>(query);
@@ -147,7 +149,7 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     }));
 
     const latest = telemetry[telemetry.length - 1];
-    const name = String(record['entity.name'] ?? record['dt.entity.host'] ?? 'Unknown host');
+    const name = String(record.hostName ?? record['dt.entity.host'] ?? 'Unknown host');
     const hostGroup = String(record.hostGroupName ?? '').trim();
     const managementZones = Array.isArray(record.managementZones)
       ? record.managementZones.map(String)
