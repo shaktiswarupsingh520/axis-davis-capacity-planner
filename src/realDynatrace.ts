@@ -51,20 +51,41 @@ const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['pro
 
 const numericValue = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
+  if (typeof value === 'string' && value.trim() !== '') {
     const number = Number(value);
     return Number.isFinite(number) ? number : undefined;
+  }
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    for (const key of ['value', 'double', 'number']) {
+      const parsed = numericValue(candidate[key]);
+      if (parsed !== undefined) return parsed;
+    }
   }
   return undefined;
 };
 
 const numericArray = (value: unknown): number[] => {
   if (Array.isArray(value)) return value.map((item) => numericValue(item) ?? 0);
-  if (value && typeof value === 'object' && 'values' in value) {
-    return numericArray((value as { values?: unknown }).values);
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    if ('values' in candidate) return numericArray(candidate.values);
+    if ('data' in candidate) return numericArray(candidate.data);
+    if ('value' in candidate) {
+      const scalar = numericValue(candidate.value);
+      return scalar === undefined ? [] : [scalar];
+    }
   }
   const scalar = numericValue(value);
   return scalar === undefined ? [] : [scalar];
+};
+
+const lastNumeric = (value: unknown): number | undefined => {
+  const values = numericArray(value);
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(values[index])) return values[index];
+  }
+  return undefined;
 };
 
 const intervalToMs = (value: unknown) => {
@@ -72,7 +93,9 @@ const intervalToMs = (value: unknown) => {
     if (value > 1_000_000_000) return value / 1_000_000;
     return value;
   }
-  const match = String(value ?? '1h').match(/^(\d+(?:\.\d+)?)\s*([smhd])$/i);
+  const text = String(value ?? '1h');
+  if (/^\d+$/.test(text)) return Number(text) / 1_000_000;
+  const match = text.match(/^(\d+(?:\.\d+)?)\s*([smhd])$/i);
   if (!match) return 60 * 60 * 1000;
   const amount = Number(match[1]);
   const unit = match[2].toLowerCase();
@@ -99,12 +122,6 @@ interface MetricRecord {
   timeframe?: unknown;
   interval?: unknown;
 }
-interface CurrentMetricRecord {
-  'dt.entity.host'?: unknown;
-  cpu?: unknown;
-  memory?: unknown;
-  disk?: unknown;
-}
 
 async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
   const selected = managementZone && managementZone !== 'All Management Zones';
@@ -125,22 +142,10 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
   return executeDql<HostEntityRecord>(query);
 }
 
-async function getCurrentHostMetrics(): Promise<CurrentMetricRecord[]> {
-  // This is intentionally the same scalar:true query verified in the
-  // Dynatrace Notebook. scalar:true returns plain numeric fields.
-  return executeDql<CurrentMetricRecord>(`
-    timeseries {
-      cpu = avg(dt.host.cpu.usage, scalar:true),
-      memory = avg(dt.host.memory.usage, scalar:true),
-      disk = avg(dt.host.disk.used.percent, scalar:true)
-    },
-    by:{dt.entity.host}
-  `);
-}
-
 async function getHostMetrics(): Promise<MetricRecord[]> {
-  // Keep the non-scalar 24h series separate for forecasting/detail charts.
-  const primary = await executeDql<MetricRecord>(`
+  // Use the exact non-scalar timeseries shape verified in the Dynatrace
+  // Notebook. Current values are derived from the last non-null datapoint.
+  return executeDql<MetricRecord>(`
     timeseries {
       cpuSeries = avg(dt.host.cpu.usage),
       memorySeries = avg(dt.host.memory.usage),
@@ -150,56 +155,46 @@ async function getHostMetrics(): Promise<MetricRecord[]> {
     interval:1h,
     from:-24h
   `);
+}
 
-  try {
-    const network = await executeDql<MetricRecord>(`
-      timeseries {
-        rx = avg(dt.host.net.nic.link_util_rx),
-        tx = avg(dt.host.net.nic.link_util_tx)
-      },
-      by:{dt.entity.host},
-      interval:1h,
-      from:-24h
-    `);
-    const networkByHost = new Map(network.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
-    return primary.map((record) => ({
-      ...record,
-      rx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.rx,
-      tx: networkByHost.get(String(record['dt.entity.host'] ?? '').trim())?.tx,
-    }));
-  } catch {
-    return primary;
-  }
+async function getNetworkMetrics(): Promise<MetricRecord[]> {
+  return executeDql<MetricRecord>(`
+    timeseries {
+      rx = avg(dt.host.net.nic.link_util_rx),
+      tx = avg(dt.host.net.nic.link_util_tx)
+    },
+    by:{dt.entity.host},
+    interval:1h,
+    from:-24h
+  `);
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
   const entities = await getHostEntities(managementZone);
   if (!entities.length) return [];
 
-  const [metricRecords, currentMetricRecords] = await Promise.all([
+  const [metricRecords, networkRecords] = await Promise.all([
     getHostMetrics(),
-    getCurrentHostMetrics(),
+    getNetworkMetrics().catch(() => []),
   ]);
 
   const metricsByHost = new Map(metricRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
-  const currentMetricsByHost = new Map(currentMetricRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
+  const networkByHost = new Map(networkRecords.map((record) => [String(record['dt.entity.host'] ?? '').trim(), record]));
 
   return entities.map((entity) => {
     const id = String(entity.id ?? '').trim();
     const metric = metricsByHost.get(id);
-    const currentMetric = currentMetricsByHost.get(id);
+    const network = networkByHost.get(id);
 
-    const cpuSeries = numericArray(metric?.cpuSeries);
-    const memorySeries = numericArray(metric?.memorySeries);
-    const diskSeries = numericArray(metric?.diskSeries);
-    const cpuScalar = numericValue(currentMetric?.cpu);
-    const memoryScalar = numericValue(currentMetric?.memory);
-    const diskScalar = numericValue(currentMetric?.disk);
-    const cpu = cpuSeries.length ? cpuSeries : cpuScalar === undefined ? [] : [cpuScalar];
-    const memory = memorySeries.length ? memorySeries : memoryScalar === undefined ? [] : [memoryScalar];
-    const disk = diskSeries.length ? diskSeries : diskScalar === undefined ? [] : [diskScalar];
-    const rx = numericArray(metric?.rx);
-    const tx = numericArray(metric?.tx);
+    const cpu = numericArray(metric?.cpuSeries);
+    const memory = numericArray(metric?.memorySeries);
+    const disk = numericArray(metric?.diskSeries);
+    const rx = numericArray(network?.rx);
+    const tx = numericArray(network?.tx);
+
+    const cpuCurrent = lastNumeric(metric?.cpuSeries);
+    const memoryCurrent = lastNumeric(metric?.memorySeries);
+    const diskCurrent = lastNumeric(metric?.diskSeries);
 
     const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, 1);
     const start = timeframeStart(metric?.timeframe);
@@ -215,9 +210,9 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
 
     const latest = telemetry[telemetry.length - 1];
     if (latest) {
-      if (cpuScalar !== undefined) latest.cpu = cpuScalar;
-      if (memoryScalar !== undefined) latest.memory = memoryScalar;
-      if (diskScalar !== undefined) latest.disk = diskScalar;
+      if (cpuCurrent !== undefined) latest.cpu = cpuCurrent;
+      if (memoryCurrent !== undefined) latest.memory = memoryCurrent;
+      if (diskCurrent !== undefined) latest.disk = diskCurrent;
     }
 
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
