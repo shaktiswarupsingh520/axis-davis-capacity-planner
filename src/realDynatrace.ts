@@ -50,13 +50,20 @@ const statusFromMetrics = (cpu: number, memory: number, disk: number): Host['pro
 
 const numeric = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) {
+    for (let i = value.length - 1; i >= 0; i -= 1) {
+      const parsed = numeric(value[i]);
+      if (parsed !== undefined) return parsed;
+    }
+    return undefined;
+  }
   if (typeof value === 'string' && value.trim()) {
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }
   if (value && typeof value === 'object') {
     const v = value as Record<string, unknown>;
-    for (const key of ['value', 'double', 'number']) {
+    for (const key of ['value', 'double', 'number', 'values', 'data']) {
       const n = numeric(v[key]);
       if (n !== undefined) return n;
     }
@@ -75,10 +82,13 @@ const numbers = (value: unknown): number[] => {
   return n === undefined ? [] : [n];
 };
 
-const lastNumber = (value: unknown) => {
-  const values = numbers(value);
-  for (let i = values.length - 1; i >= 0; i -= 1) if (Number.isFinite(values[i])) return values[i];
-  return 0;
+const hostId = (value: unknown): string => {
+  if (Array.isArray(value)) return String(value[0] ?? '').trim();
+  if (value && typeof value === 'object') {
+    const v = value as Record<string, unknown>;
+    return hostId(v.value ?? v.values ?? v.data ?? v.id);
+  }
+  return String(value ?? '').trim();
 };
 
 const intervalMs = (value: unknown) => {
@@ -117,8 +127,6 @@ interface SeriesRecord {
 }
 
 async function getCurrentHostMetrics(): Promise<CurrentHostRecord[]> {
-  // This is the exact scalar DQL already proven in the Dynatrace Notebook.
-  // The host metadata is joined in DQL so the returned row is self-contained.
   return executeDql<CurrentHostRecord>(`
     timeseries {
       cpu = avg(dt.host.cpu.usage, scalar:true),
@@ -160,7 +168,7 @@ async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>>
     interval:1h,
     from:-24h
   `).catch(() => []);
-  return new Map(records.map((r) => [String(r['dt.entity.host'] ?? '').trim(), r]));
+  return new Map(records.map((r) => [hostId(r['dt.entity.host']), r]));
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
@@ -170,7 +178,7 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     getNetworkSeries(),
   ]);
 
-  const seriesByHost = new Map(seriesRecords.map((r) => [String(r['dt.entity.host'] ?? '').trim(), r]));
+  const seriesByHost = new Map(seriesRecords.map((r) => [hostId(r['dt.entity.host']), r]));
   const selected = managementZone && managementZone !== 'All Management Zones' ? managementZone : undefined;
 
   return currentRecords
@@ -182,7 +190,7 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
       return zones.includes(selected);
     })
     .map((record) => {
-      const id = String(record['dt.entity.host'] ?? '').trim();
+      const id = hostId(record['dt.entity.host']);
       const series = seriesByHost.get(id);
       const network = networkByHost.get(id);
 
@@ -208,7 +216,6 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
         networkTx: tx[index] ?? 0,
       }));
 
-      // Scalar query is authoritative for the live cards/table.
       const latest = telemetry[telemetry.length - 1];
       latest.cpu = currentCpu;
       latest.memory = currentMemory;
