@@ -246,7 +246,7 @@ async function getApplicationThroughputSeries(): Promise<Map<string, ThroughputR
       | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service)
       | fieldsAdd samplingProbability = (power(2, 56) - coalesce(sampling.threshold, 0)) * power(2, -56)
       | fieldsAdd multiplicity = coalesce(1 / samplingProbability, 1) * coalesce(aggregation.count, 1) * coalesce(dt.system.sampling_ratio, 1)
-      | makeTimeseries throughputSeries = sum(multiplicity), by:{dt.entity.host}, interval:1m, from:-24h
+      | makeTimeseries { throughputSeries = sum(multiplicity) }, by:{dt.entity.host}, interval:1m, from:-24h
       | fieldsAdd throughputCurrent = arrayLast(throughputSeries)
       | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval
     `);
