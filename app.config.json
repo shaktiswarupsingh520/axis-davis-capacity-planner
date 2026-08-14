@@ -2,11 +2,12 @@
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.9",
+    "version": "1.0.14",
     "description": "Axis infrastructure capacity planning with live Dynatrace data.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
       { "name": "storage:metrics:read", "comment": "Read host metrics from Grail" },
+      { "name": "storage:buckets:read", "comment": "Read Grail metric buckets required by timeseries queries" },
       { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" }
     ]
   },
