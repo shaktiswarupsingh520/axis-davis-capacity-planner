@@ -7,12 +7,12 @@ interface HostEntityRecord { id?: unknown; 'entity.name'?: unknown; hostGroupNam
 interface SeriesRecord { 'dt.entity.host'?: unknown; cpuSeries?: unknown; memorySeries?: unknown; diskSeries?: unknown; cpuCurrent?: unknown; memoryCurrent?: unknown; diskCurrent?: unknown; timeframe?: unknown; interval?: unknown; }
 interface ThroughputRecord { 'dt.entity.host'?: unknown; throughputSeries?: unknown; throughputCurrent?: unknown; timeframe?: unknown; interval?: unknown; }
 
-const RANGE_SPEC: Record<TimeRange, { from: string; interval: string }> = {
-  '1h': { from: '1h', interval: '1m' },
-  '6h': { from: '6h', interval: '5m' },
-  '24h': { from: '24h', interval: '1h' },
-  '7d': { from: '7d', interval: '6h' },
-  '30d': { from: '30d', interval: '1d' },
+const RANGE_SPEC: Record<TimeRange, { from: string; interval: string; throughputInterval: string }> = {
+  '1h': { from: '1h', interval: '1m', throughputInterval: '1m' },
+  '6h': { from: '6h', interval: '5m', throughputInterval: '1m' },
+  '24h': { from: '24h', interval: '15m', throughputInterval: '5m' },
+  '7d': { from: '7d', interval: '6h', throughputInterval: '15m' },
+  '30d': { from: '30d', interval: '1d', throughputInterval: '1h' },
 };
 
 async function executeDql<T>(query: string): Promise<T[]> {
@@ -79,9 +79,7 @@ async function getHostSeries(timeRange: TimeRange): Promise<SeriesRecord[]> {
   const { from, interval } = RANGE_SPEC[timeRange];
   const run = async (alias: 'cpuSeries' | 'memorySeries' | 'diskSeries', metric: string) => {
     const current = alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent';
-    try {
-      return await executeDql<SeriesRecord>(`timeseries ${alias}=avg(${metric}), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now() | fieldsAdd ${current}=arrayLast(${alias}) | fields dt.entity.host, ${alias}, ${current}, timeframe, interval`);
-    } catch { return []; }
+    return executeDql<SeriesRecord>(`timeseries ${alias}=avg(${metric}), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now() | fieldsAdd ${current}=arrayLast(${alias}) | fields dt.entity.host, ${alias}, ${current}, timeframe, interval`);
   };
   const [cpu, memory, disk] = await Promise.all([run('cpuSeries', 'dt.host.cpu.usage'), run('memorySeries', 'dt.host.memory.usage'), run('diskSeries', 'dt.host.disk.used.percent')]);
   const map = new Map<string, SeriesRecord>();
@@ -89,40 +87,40 @@ async function getHostSeries(timeRange: TimeRange): Promise<SeriesRecord[]> {
   return [...map.values()];
 }
 
-async function getNetworkSeries(timeRange: TimeRange): Promise<Map<string, Record<string, unknown>>> {
+async function getNetworkSeries(timeRange: TimeRange, hostIds: string[]): Promise<Map<string, Record<string, unknown>>> {
+  if (!hostIds.length) return new Map();
   const { from, interval } = RANGE_SPEC[timeRange];
-  try {
-    const records = await executeDql<Record<string, unknown>>(`timeseries rx=avg(dt.host.net.nic.bytes_rx), tx=avg(dt.host.net.nic.bytes_tx), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now()`);
-    return new Map(records.map((r) => [hostId(r['dt.entity.host']), r]));
-  } catch { return new Map(); }
+  const filter = `filter in(dt.entity.host, ${hostIds.map((id) => `"${escapeDqlString(id)}"`).join(', ')})`;
+  const records = await executeDql<Record<string, unknown>>(`timeseries rx=avg(dt.host.net.nic.bytes_rx), tx=avg(dt.host.net.nic.bytes_tx), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now() | ${filter}`);
+  return new Map(records.map((r) => [hostId(r['dt.entity.host']), r]));
 }
 
-async function getApplicationThroughputSeries(timeRange: TimeRange): Promise<Map<string, ThroughputRecord>> {
-  const { from, interval } = RANGE_SPEC[timeRange];
-  try {
-    const metricRecords = await executeDql<ThroughputRecord>(`timeseries throughputSeries=sum(dt.service.request.count, rate:1m), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now() | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`);
-    if (metricRecords.length) return new Map(metricRecords.map((record) => [hostId(record['dt.entity.host']), record]));
-  } catch {
-    // Fall through to root request spans. Service request count is preferred because it is the Grail service-throughput metric.
-  }
-  try {
-    const records = await executeDql<ThroughputRecord>(`fetch spans, from:now()-${from}, to:now() | filter request.is_root_span == true | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service) | makeTimeseries throughputSeries=count(), by:{dt.entity.host}, interval:${interval} | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`);
-    return new Map(records.map((record) => [hostId(record['dt.entity.host']), record]));
-  } catch {
-    return new Map();
-  }
+async function getApplicationThroughputSeries(timeRange: TimeRange, hostIds: string[]): Promise<Map<string, ThroughputRecord>> {
+  if (!hostIds.length) return new Map();
+  const { from, throughputInterval } = RANGE_SPEC[timeRange];
+  const filter = `| filter in(dt.entity.host, ${hostIds.map((id) => `"${escapeDqlString(id)}"`).join(', ')})`;
+  const query = `fetch spans, from:now()-${from}, to:now() | filter request.is_root_span == true | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service) ${filter} | makeTimeseries throughputSeries=count(), by:{dt.entity.host}, interval:${throughputInterval} | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`;
+  const records = await executeDql<ThroughputRecord>(query);
+  return new Map(records.map((record) => [hostId(record['dt.entity.host']), record]));
 }
 
 export async function getHosts(managementZone?: string, timeRange: TimeRange = '24h'): Promise<Host[]> {
-  const [entities, seriesRecords, networkByHost, throughputByHost] = await Promise.all([getHostEntities(managementZone), getHostSeries(timeRange), getNetworkSeries(timeRange), getApplicationThroughputSeries(timeRange)]);
+  const entities = await getHostEntities(managementZone);
+  const entityIds = entities.map((entity) => hostId(entity.id)).filter(Boolean);
+  const [seriesRecords, networkByHost, throughputByHost] = await Promise.all([getHostSeries(timeRange), getNetworkSeries(timeRange, entityIds), getApplicationThroughputSeries(timeRange, entityIds)]);
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
   return entities.map((entity) => {
     const id = hostId(entity.id); const series = seriesByHost.get(id); const network = networkByHost.get(id); const throughput = throughputByHost.get(id);
     const cpu = numbers(series?.cpuSeries); const memory = numbers(series?.memorySeries); const disk = numbers(series?.diskSeries); const rx = numbers(network?.rx); const tx = numbers(network?.tx); const appThroughput = numbers(throughput?.throughputSeries);
-    const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0; const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0; const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0; const currentThroughput = numeric(throughput?.throughputCurrent) ?? lastNumeric(throughput?.throughputSeries) ?? 0;
-    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, appThroughput.length, 1); const start = startMs(series?.timeframe ?? network?.timeframe ?? throughput?.timeframe); const step = intervalMs(series?.interval ?? network?.interval ?? throughput?.interval);
-    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({ timestamp: new Date(start + index * step).toISOString(), cpu: cpu[index] ?? 0, memory: memory[index] ?? 0, disk: disk[index] ?? 0, networkRx: rx[index] ?? 0, networkTx: tx[index] ?? 0, throughput: appThroughput[index] ?? 0 }));
-    const latest = telemetry[telemetry.length - 1]; latest.cpu = currentCpu; latest.memory = currentMemory; latest.disk = currentDisk; latest.throughput = currentThroughput;
+    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, appThroughput.length, 1);
+    const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0;
+    const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0;
+    const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0;
+    const currentThroughput = lastNumeric(throughput?.throughputSeries) ?? 0;
+    const start = startMs(series?.timeframe ?? network?.timeframe ?? throughput?.timeframe); const step = intervalMs(series?.interval ?? network?.interval ?? throughput?.interval);
+    const throughputScale = Math.max(step / 60000, 1);
+    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({ timestamp: new Date(start + index * step).toISOString(), cpu: cpu[index] ?? 0, memory: memory[index] ?? 0, disk: disk[index] ?? 0, networkRx: rx[index] ?? 0, networkTx: tx[index] ?? 0, throughput: (appThroughput[index] ?? 0) / throughputScale }));
+    const latest = telemetry[telemetry.length - 1]; latest.cpu = currentCpu; latest.memory = currentMemory; latest.disk = currentDisk; latest.throughput = currentThroughput / throughputScale;
     const group = String(entity.hostGroupName ?? '').trim(); const zones = Array.isArray(entity.managementZones) ? entity.managementZones.map(String) : [String(entity.managementZones ?? '')].filter(Boolean);
     return { id, name: String(entity['entity.name'] ?? id), environment: environmentFromHost(group), application: group || 'Unclassified host group', profile: statusFromMetrics(currentCpu, currentMemory, currentDisk), managementZones: zones, telemetry } satisfies Host;
   });
