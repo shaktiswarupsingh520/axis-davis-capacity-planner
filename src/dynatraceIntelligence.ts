@@ -3,101 +3,12 @@ import { publicClient } from '@dynatrace-sdk/client-davis-copilot';
 import type { ForecastHorizon, Host, MetricKey } from '@/types';
 
 const ANALYZER = 'dt.statistics.GenericForecastAnalyzer';
-
-export interface DynatraceForecast {
-  metric: MetricKey;
-  horizon: ForecastHorizon;
-  historical: number[];
-  forecast: number[];
-  lowerBound: number[];
-  upperBound: number[];
-  forecastStart: string | null;
-  forecastEnd: string | null;
-  quality: string;
-  status: string;
-  source: 'Dynatrace Intelligence' | 'fallback';
-  error?: string;
-}
-
-const metricExpression = (metric: MetricKey, hostId: string) => {
-  const metricName = metric === 'cpu' ? 'dt.host.cpu.usage' : metric === 'memory' ? 'dt.host.memory.usage' : 'dt.host.disk.used.percent';
-  return `timeseries value=avg(${metricName}), interval:1h, from:-30d, to:now(), filter:dt.entity.host == "${hostId.replace(/"/g, '\\"')}"`;
-};
-
+export interface DynatraceForecast { metric: MetricKey; horizon: ForecastHorizon; historical: number[]; forecast: number[]; lowerBound: number[]; upperBound: number[]; forecastStart: string | null; forecastEnd: string | null; quality: string; status: string; source: 'Dynatrace Intelligence' | 'fallback'; error?: string; }
+const metricExpression = (metric: MetricKey, hostId: string) => { const metricName = metric === 'cpu' ? 'dt.host.cpu.usage' : metric === 'memory' ? 'dt.host.memory.usage' : 'dt.host.disk.used.percent'; const escaped = hostId.replace(/\\/g, '\\\\').replace(/"/g, '\\"'); return `timeseries value=avg(${metricName}), interval:1h, from:-30d, to:now(), filter:in(dt.entity.host, "${escaped}")`; };
 const numericArray = (value: unknown): number[] => Array.isArray(value) ? value.map((v) => typeof v === 'number' && Number.isFinite(v) ? v : Number(v)).filter(Number.isFinite) : [];
-
-async function pollForecast(requestToken: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    const response = await analyzersClient.pollAnalyzerExecution({ analyzerName: ANALYZER, requestToken, timeoutSeconds: 5 });
-    if (response.result.executionStatus === 'COMPLETED') return response.result;
-    if (response.result.executionStatus === 'ABORTED') throw new Error('Dynatrace Intelligence forecast was aborted.');
-  }
-  throw new Error('Dynatrace Intelligence forecast timed out.');
+async function pollForecast(requestToken: string) { for (let attempt = 0; attempt < 20; attempt += 1) { await new Promise((resolve) => setTimeout(resolve, 700)); const response = await analyzersClient.pollAnalyzerExecution({ analyzerName: ANALYZER, requestToken, timeoutSeconds: 5 }); if (response.result.executionStatus === 'COMPLETED') return response.result; if (response.result.executionStatus === 'ABORTED') throw new Error('Dynatrace Intelligence forecast was aborted.'); } throw new Error('Dynatrace Intelligence forecast timed out.'); }
+export async function runDynatraceForecast(host: Host, metric: MetricKey, horizon: ForecastHorizon): Promise<DynatraceForecast> { const expression = metricExpression(metric, host.id); const historical = host.telemetry.map((p) => p[metric === 'network' ? 'cpu' : metric]).filter((v): v is number => typeof v === 'number'); try { const response = await analyzersClient.executeAnalyzer({ analyzerName: ANALYZER, timeoutSeconds: 5, body: { timeSeriesData: { expression }, forecastHorizon: horizon * 24, coverageProbability: 0.9, nPaths: 200 } }); const result = response.requestToken ? await pollForecast(response.requestToken) : response.result; const output = result.output?.[0] as Record<string, any> | undefined; const band = output?.timeSeriesDataWithPredictions?.records?.[0] as Record<string, any> | undefined; if (!band || result.resultStatus === 'FAILED') throw new Error(output?.analysisStatus || result.logs?.map((x) => x.message).join(' ') || 'Forecast analyzer returned no prediction.'); const point = numericArray(band['dt.davis.forecast:point']); const lower = numericArray(band['dt.davis.forecast:lower']); const upper = numericArray(band['dt.davis.forecast:upper']); const timeframe = band.timeframe as { start?: string; end?: string } | undefined; return { metric, horizon, historical, forecast: point, lowerBound: lower, upperBound: upper, forecastStart: timeframe?.start ?? null, forecastEnd: timeframe?.end ?? null, quality: String(output?.forecastQualityAssessment ?? 'unknown'), status: String(output?.analysisStatus ?? 'OK'), source: 'Dynatrace Intelligence' }; } catch (error) { return { metric, horizon, historical, forecast: [], lowerBound: [], upperBound: [], forecastStart: null, forecastEnd: null, quality: 'unavailable', status: 'FAILED', source: 'fallback', error: error instanceof Error ? error.message : String(error) }; } }
+export async function getDynatraceForecasts(hosts: Host[], metric: MetricKey, horizon: ForecastHorizon) { return Promise.all(hosts.map(async (host) => ({ host, forecast: await runDynatraceForecast(host, metric, horizon) })));
 }
-
-export async function runDynatraceForecast(host: Host, metric: MetricKey, horizon: ForecastHorizon): Promise<DynatraceForecast> {
-  const expression = metricExpression(metric, host.id);
-  try {
-    const response = await analyzersClient.executeAnalyzer({
-      analyzerName: ANALYZER,
-      timeoutSeconds: 5,
-      body: {
-        timeSeriesData: { expression },
-        forecastHorizon: horizon * 24,
-        coverageProbability: 0.9,
-        nPaths: 200,
-      },
-    });
-    const result = response.requestToken ? await pollForecast(response.requestToken) : response.result;
-    const output = result.output?.[0] as Record<string, any> | undefined;
-    const band = output?.timeSeriesDataWithPredictions?.records?.[0] as Record<string, any> | undefined;
-    if (!band || result.resultStatus === 'FAILED') throw new Error(output?.analysisStatus || result.logs?.map((x) => x.message).join(' ') || 'Forecast analyzer returned no prediction.');
-    const point = numericArray(band['dt.davis.forecast:point']);
-    const lower = numericArray(band['dt.davis.forecast:lower']);
-    const upper = numericArray(band['dt.davis.forecast:upper']);
-    const timeframe = band.timeframe as { start?: string; end?: string } | undefined;
-    return { metric, horizon, historical: host.telemetry.map((p) => p[metric === 'network' ? 'cpu' : metric]).filter((v): v is number => typeof v === 'number'), forecast: point, lowerBound: lower, upperBound: upper, forecastStart: timeframe?.start ?? null, forecastEnd: timeframe?.end ?? null, quality: String(output?.forecastQualityAssessment ?? 'unknown'), status: String(output?.analysisStatus ?? 'OK'), source: 'Dynatrace Intelligence' };
-  } catch (error) {
-    return { metric, horizon, historical: host.telemetry.map((p) => p[metric === 'network' ? 'cpu' : metric]).filter((v): v is number => typeof v === 'number'), forecast: [], lowerBound: [], upperBound: [], forecastStart: null, forecastEnd: null, quality: 'unavailable', status: 'FAILED', source: 'fallback', error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-export async function getDynatraceForecasts(hosts: Host[], metric: MetricKey, horizon: ForecastHorizon) {
-  return Promise.all(hosts.map(async (host) => ({ host, forecast: await runDynatraceForecast(host, metric, horizon) })));
-}
-
-export interface AiCapacitySummary {
-  text: string;
-  generatedAt: string;
-  source: 'Dynatrace Assist' | 'fallback';
-}
-
-export async function generateAssistCapacitySummary(hosts: Host[], managementZone: string, forecasts: Array<{ host: Host; forecast: DynatraceForecast }> = []): Promise<AiCapacitySummary> {
-  const current = hosts.map((host) => {
-    const p = host.telemetry.at(-1);
-    return { host: host.name, application: host.application, environment: host.environment, cpu: Math.round(p?.cpu ?? 0), memory: Math.round(p?.memory ?? 0), disk: Math.round(p?.disk ?? 0), networkRxBytesPerSecond: Math.round(p?.networkRx ?? 0), networkTxBytesPerSecond: Math.round(p?.networkTx ?? 0), throughputRequestsPerMinute: Math.round(p?.throughput ?? 0) };
-  });
-  const forecastContext = forecasts.slice(0, 20).map(({ host, forecast }) => ({ host: host.name, metric: forecast.metric, horizonDays: forecast.horizon, forecastPeak: Math.round(Math.max(...forecast.forecast, 0)), lowerPeak: Math.round(Math.max(...forecast.lowerBound, 0)), upperPeak: Math.round(Math.max(...forecast.upperBound, 0)), quality: forecast.quality, forecastEnd: forecast.forecastEnd }));
-  const prompt = `You are the capacity planning advisor for an enterprise SRE team. Analyze ONLY the supplied live Dynatrace telemetry and Dynatrace Intelligence forecast results. Do not invent values. Management Zone: ${managementZone}. Current telemetry: ${JSON.stringify(current)}. Forecast analyzer results: ${JSON.stringify(forecastContext)}. Produce an executive-ready capacity assessment with these sections: Executive Summary, Key Findings, Capacity Risks, Recommended Actions (prioritized P1/P2/P3), and 30/60/90-day planning recommendation. Mention concrete host names and utilization values where useful. Explain whether CPU, memory, disk, network, or application throughput is the primary constraint. If forecast quality is unavailable, say so explicitly. Keep it concise but specific.`;
-  try {
-    const response = await publicClient.recommenderConversation({
-      acceptType: 'application/json',
-      body: {
-        text: prompt,
-        context: [
-          { type: 'document-retrieval', value: 'disabled' },
-          { type: 'instruction', value: 'Use only the supplied Dynatrace telemetry. Return plain text with clear headings and bullets. Do not expose internal reasoning.' },
-        ],
-        annotations: { origin: { value: 'Axis Capacity Planner' } },
-      },
-    });
-    const text = response.text?.trim();
-    if (!text) throw new Error('Dynatrace Assist returned an empty response.');
-    return { text, generatedAt: new Date().toISOString(), source: 'Dynatrace Assist' };
-  } catch (error) {
-    const high = current.filter((x) => Math.max(x.cpu, x.memory, x.disk) >= 80).sort((a, b) => Math.max(b.cpu, b.memory, b.disk) - Math.max(a.cpu, a.memory, a.disk));
-    const summary = high.length ? `Capacity risk is concentrated on ${high.length} host(s). Highest observed utilization: ${high.slice(0, 5).map((x) => `${x.host} (CPU ${x.cpu}%, memory ${x.memory}%, disk ${x.disk}%)`).join('; ')}. Prioritize memory/disk remediation on hosts at or above 80%, validate application throughput before scaling, and re-run the Dynatrace Intelligence forecast after remediation.` : `The selected scope contains ${hosts.length} hosts and no host is currently at or above 80% CPU, memory, or disk utilization. Continue monitoring application throughput and re-run the Dynatrace Intelligence forecast as the estate changes.`;
-    return { text: `Executive Summary\n${summary}\n\nRecommended Actions\n• Prioritize hosts at or above 80% utilization.\n• Validate network and application throughput before adding capacity.\n• Re-run the Dynatrace Intelligence forecast after material infrastructure changes.\n\nNote: Dynatrace Assist was unavailable for this run (${error instanceof Error ? error.message : String(error)}).`, generatedAt: new Date().toISOString(), source: 'fallback' };
-  }
-}
+export interface AiCapacitySummary { text: string; generatedAt: string; source: 'Dynatrace Assist' | 'fallback'; }
+export async function generateAssistCapacitySummary(hosts: Host[], managementZone: string, forecasts: Array<{ host: Host; forecast: DynatraceForecast }> = []): Promise<AiCapacitySummary> { const current = hosts.map((host) => { const p = host.telemetry.at(-1); return { host: host.name, application: host.application, environment: host.environment, cpu: Math.round(p?.cpu ?? 0), memory: Math.round(p?.memory ?? 0), disk: Math.round(p?.disk ?? 0), networkRxBytesPerSecond: Math.round(p?.networkRx ?? 0), networkTxBytesPerSecond: Math.round(p?.networkTx ?? 0), throughputRequestsPerMinute: Math.round(p?.throughput ?? 0) }; }); const forecastContext = forecasts.slice(0, 20).map(({ host, forecast }) => ({ host: host.name, metric: forecast.metric, horizonDays: forecast.horizon, forecastPeak: Math.round(Math.max(...forecast.forecast, 0)), lowerPeak: Math.round(Math.max(...forecast.lowerBound, 0)), upperPeak: Math.round(Math.max(...forecast.upperBound, 0)), quality: forecast.quality, forecastEnd: forecast.forecastEnd })); const prompt = `You are the capacity planning advisor for an enterprise SRE team. Analyze ONLY the supplied live Dynatrace telemetry and Dynatrace Intelligence forecast results. Do not invent values. Management Zone: ${managementZone}. Current telemetry: ${JSON.stringify(current)}. Forecast analyzer results: ${JSON.stringify(forecastContext)}. Produce an executive-ready capacity assessment with these sections: Executive Summary, Key Findings, Capacity Risks, Recommended Actions (prioritized P1/P2/P3), and 30/60/90-day planning recommendation. Mention concrete host names and utilization values where useful. Explain whether CPU, memory, disk, network, or application throughput is the primary constraint. If forecast quality is unavailable, say so explicitly. Keep it concise but specific.`; try { const response = await publicClient.recommenderConversation({ acceptType: 'application/json', body: { text: prompt, context: [{ type: 'document-retrieval', value: 'disabled' }, { type: 'instruction', value: 'Use only the supplied Dynatrace telemetry. Return plain text with clear headings and bullets. Do not expose internal reasoning.' }] } }); const text = (response as unknown as { text?: string }).text?.trim(); if (!text) throw new Error('Dynatrace Assist returned an empty response.'); return { text, generatedAt: new Date().toISOString(), source: 'Dynatrace Assist' }; } catch (error) { const high = current.filter((x) => Math.max(x.cpu, x.memory, x.disk) >= 80).sort((a, b) => Math.max(b.cpu, b.memory, b.disk) - Math.max(a.cpu, a.memory, a.disk)); const summary = high.length ? `Capacity risk is concentrated on ${high.length} host(s). Highest observed utilization: ${high.slice(0, 5).map((x) => `${x.host} (CPU ${x.cpu}%, memory ${x.memory}%, disk ${x.disk}%)`).join('; ')}. Prioritize memory/disk remediation on hosts at or above 80%, validate application throughput before scaling, and re-run the Dynatrace Intelligence forecast after remediation.` : `The selected scope contains ${hosts.length} hosts and no host is currently at or above 80% CPU, memory, or disk utilization. Continue monitoring application throughput and re-run the Dynatrace Intelligence forecast as the estate changes.`; return { text: `Executive Summary\n${summary}\n\nRecommended Actions\n• Prioritize hosts at or above 80% utilization.\n• Validate network and application throughput before adding capacity.\n• Re-run the Dynatrace Intelligence forecast after material infrastructure changes.\n\nNote: Dynatrace Assist was unavailable for this run (${error instanceof Error ? error.message : String(error)}).`, generatedAt: new Date().toISOString(), source: 'fallback' }; } }
