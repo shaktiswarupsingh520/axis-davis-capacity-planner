@@ -11,6 +11,8 @@ export interface TelemetryPoint {
   disk: number;
   networkRx: number;
   networkTx: number;
+  /** Application-service request throughput observed on the host, in requests/minute. */
+  throughput?: number;
 }
 
 export interface Host {
