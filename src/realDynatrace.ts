@@ -200,7 +200,7 @@ async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>>
   const records = await executeDql<Record<string, unknown>>(`
     timeseries {
       rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.net.nic.link_util_tx)
+      tx = avg(dt.host.net.nic.link_util_tx)
     },
     by:{dt.entity.host},
     interval:1h,
