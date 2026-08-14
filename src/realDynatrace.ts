@@ -26,11 +26,7 @@ async function executeDql<T>(query: string): Promise<T[]> {
   if (!result) throw new Error(`Dynatrace DQL query did not return a result (state: ${state}).`);
 
   const records = (result.records ?? []).filter(Boolean) as T[];
-  debug('DQL result', {
-    state,
-    recordCount: records.length,
-    firstRecord: records[0],
-  });
+  debug('DQL result', { state, recordCount: records.length, firstRecord: records[0] });
   return records;
 }
 
@@ -151,6 +147,14 @@ interface SeriesRecord {
   interval?: unknown;
 }
 
+interface ThroughputRecord {
+  'dt.entity.host'?: unknown;
+  throughputSeries?: unknown;
+  throughputCurrent?: unknown;
+  timeframe?: unknown;
+  interval?: unknown;
+}
+
 const escapeDqlString = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 async function getHostEntities(managementZone?: string): Promise<HostEntityRecord[]> {
@@ -172,21 +176,16 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 }
 
 async function getHostSeries(managementZone?: string): Promise<SeriesRecord[]> {
-  const selected = managementZone && managementZone !== 'All Management Zones';
-  const zoneFilter = selected
-    ? `| filterOut isNull(dt.entity.host)`
-    : '';
-
   const runMetric = async (alias: 'cpuSeries' | 'memorySeries' | 'diskSeries', metric: string): Promise<SeriesRecord[]> => {
     try {
+      const currentField = alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent';
       const records = await executeDql<SeriesRecord>(`
         timeseries ${alias} = avg(${metric}),
         by:{dt.entity.host},
         interval:1h,
         from:-24h
-        ${zoneFilter}
-        | fieldsAdd ${alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent'} = arrayLast(${alias})
-        | fields dt.entity.host, ${alias}, ${alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent'}, timeframe, interval
+        | fieldsAdd ${currentField} = arrayLast(${alias})
+        | fields dt.entity.host, ${alias}, ${currentField}, timeframe, interval
       `);
       debug(`${alias} host series`, { metric, recordCount: records.length });
       return records;
@@ -217,44 +216,77 @@ async function getHostSeries(managementZone?: string): Promise<SeriesRecord[]> {
 }
 
 async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>> {
-  const records = await executeDql<Record<string, unknown>>(`
-    timeseries {
-      rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.net.nic.link_util_tx)
-    },
-    by:{dt.entity.host},
-    interval:1h,
-    from:-24h
-  `).catch(() => []);
-  return new Map(records.map((r) => [hostId(r['dt.entity.host']), r]));
+  try {
+    const records = await executeDql<Record<string, unknown>>(`
+      timeseries {
+        rx = avg(dt.host.net.nic.link_util_rx),
+        tx = avg(dt.host.net.nic.link_util_tx)
+      },
+      by:{dt.entity.host},
+      interval:1h,
+      from:-24h
+    `);
+    debug('host network series', { recordCount: records.length });
+    return new Map(records.map((r) => [hostId(r['dt.entity.host']), r]));
+  } catch (error) {
+    debug('host network series failed', { error: error instanceof Error ? error.message : String(error) });
+    return new Map();
+  }
+}
+
+/**
+ * Application throughput is derived from root service-request spans and grouped by host.
+ * The result is requests/minute observed on the host across its instrumented application services.
+ */
+async function getApplicationThroughputSeries(): Promise<Map<string, ThroughputRecord>> {
+  try {
+    const records = await executeDql<ThroughputRecord>(`
+      fetch spans, samplingRatio:1
+      | filter request.is_root_span == true
+      | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service)
+      | fieldsAdd samplingProbability = (power(2, 56) - coalesce(sampling.threshold, 0)) * power(2, -56)
+      | fieldsAdd multiplicity = coalesce(1 / samplingProbability, 1) * coalesce(aggregation.count, 1) * coalesce(dt.system.sampling_ratio, 1)
+      | makeTimeseries throughputSeries = sum(multiplicity), by:{dt.entity.host}, interval:1m, from:-24h
+      | fieldsAdd throughputCurrent = arrayLast(throughputSeries)
+      | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval
+    `);
+    debug('application service throughput', { recordCount: records.length });
+    return new Map(records.map((record) => [hostId(record['dt.entity.host']), record]));
+  } catch (error) {
+    debug('application service throughput failed', { error: error instanceof Error ? error.message : String(error) });
+    return new Map();
+  }
 }
 
 export async function getHosts(managementZone?: string): Promise<Host[]> {
-  const [entities, seriesRecords, networkByHost] = await Promise.all([
+  const [entities, seriesRecords, networkByHost, throughputByHost] = await Promise.all([
     getHostEntities(managementZone),
     getHostSeries(managementZone),
     getNetworkSeries(),
+    getApplicationThroughputSeries(),
   ]);
 
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
 
-  debug('Dynatrace series host map', {
-    recordCount: seriesRecords.length,
-    hostIds: [...seriesByHost.keys()].slice(0, 10),
-  });
+  debug('Dynatrace series host map', { recordCount: seriesRecords.length, hostIds: [...seriesByHost.keys()].slice(0, 10) });
 
   return entities.map((entity) => {
     const id = hostId(entity.id);
     const series = seriesByHost.get(id);
     const network = networkByHost.get(id);
+    const throughputSeriesRecord = throughputByHost.get(id);
 
     const seriesCpu = numbers(series?.cpuSeries);
     const seriesMemory = numbers(series?.memorySeries);
     const seriesDisk = numbers(series?.diskSeries);
+    const seriesThroughput = numbers(throughputSeriesRecord?.throughputSeries);
+    const rx = numbers(network?.rx);
+    const tx = numbers(network?.tx);
 
     const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0;
     const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0;
     const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0;
+    const currentThroughput = numeric(throughputSeriesRecord?.throughputCurrent) ?? lastNumeric(throughputSeriesRecord?.throughputSeries) ?? 0;
 
     debug('Host metric mapping', {
       entityId: id,
@@ -264,20 +296,17 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
       rawCpuCurrent: series?.cpuCurrent,
       rawMemoryCurrent: series?.memoryCurrent,
       rawDiskCurrent: series?.diskCurrent,
-      rawCpuSeries: series?.cpuSeries,
-      rawMemorySeries: series?.memorySeries,
-      rawDiskSeries: series?.diskSeries,
       parsedCpu: currentCpu,
       parsedMemory: currentMemory,
       parsedDisk: currentDisk,
+      networkRx: lastNumeric(network?.rx) ?? 0,
+      networkTx: lastNumeric(network?.tx) ?? 0,
+      applicationThroughput: currentThroughput,
     });
 
-    const rx = numbers(network?.rx);
-    const tx = numbers(network?.tx);
-
-    const points = Math.max(seriesCpu.length, seriesMemory.length, seriesDisk.length, rx.length, tx.length, 1);
-    const start = startMs(series?.timeframe);
-    const step = intervalMs(series?.interval);
+    const points = Math.max(seriesCpu.length, seriesMemory.length, seriesDisk.length, rx.length, tx.length, seriesThroughput.length, 1);
+    const start = startMs(series?.timeframe ?? throughputSeriesRecord?.timeframe);
+    const step = intervalMs(series?.interval ?? throughputSeriesRecord?.interval);
     const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
       timestamp: new Date(start + index * step).toISOString(),
       cpu: seriesCpu[index] ?? 0,
@@ -285,21 +314,16 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
       disk: seriesDisk[index] ?? 0,
       networkRx: rx[index] ?? 0,
       networkTx: tx[index] ?? 0,
+      throughput: seriesThroughput[index] ?? 0,
     }));
 
     const latest = telemetry[telemetry.length - 1];
     latest.cpu = currentCpu;
     latest.memory = currentMemory;
     latest.disk = currentDisk;
+    latest.throughput = currentThroughput;
 
-    debug('Final host telemetry', {
-      hostId: id,
-      hostName: entity['entity.name'],
-      cpu: latest.cpu,
-      memory: latest.memory,
-      disk: latest.disk,
-      telemetryLength: telemetry.length,
-    });
+    debug('Final host telemetry', { hostId: id, hostName: entity['entity.name'], cpu: latest.cpu, memory: latest.memory, disk: latest.disk, networkRx: latest.networkRx, networkTx: latest.networkTx, throughput: latest.throughput, telemetryLength: telemetry.length });
 
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
     const group = String(entity.hostGroupName ?? '').trim();
