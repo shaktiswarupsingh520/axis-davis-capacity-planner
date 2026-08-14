@@ -2,7 +2,7 @@
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.19",
+    "version": "1.0.20",
     "description": "Axis infrastructure capacity planning with selectable live telemetry timeframe, application throughput simulation, and Dynatrace Intelligence forecasting.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
@@ -16,6 +16,9 @@
   },
   "build": {
     "sourceRoot": "src"
+  },
+  "server": {
+    "port": 3001
   },
   "server": {
     "port": 3001
