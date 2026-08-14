@@ -85,13 +85,7 @@ async function getHostSeries(timeRange: TimeRange): Promise<SeriesRecord[]> {
   };
   const [cpu, memory, disk] = await Promise.all([run('cpuSeries', 'dt.host.cpu.usage'), run('memorySeries', 'dt.host.memory.usage'), run('diskSeries', 'dt.host.disk.used.percent')]);
   const map = new Map<string, SeriesRecord>();
-  for (const record of [...cpu, ...memory, ...disk]) {
-    const id = hostId(record['dt.entity.host']);
-    if (!id) continue;
-    const current = map.get(id) ?? { 'dt.entity.host': record['dt.entity.host'], timeframe: record.timeframe, interval: record.interval };
-    Object.assign(current, record);
-    map.set(id, current);
-  }
+  for (const record of [...cpu, ...memory, ...disk]) { const id = hostId(record['dt.entity.host']); if (!id) continue; const current = map.get(id) ?? { 'dt.entity.host': record['dt.entity.host'], timeframe: record.timeframe, interval: record.interval }; Object.assign(current, record); map.set(id, current); }
   return [...map.values()];
 }
 
@@ -106,7 +100,12 @@ async function getNetworkSeries(timeRange: TimeRange): Promise<Map<string, Recor
 async function getApplicationThroughputSeries(timeRange: TimeRange): Promise<Map<string, ThroughputRecord>> {
   const { from, interval } = RANGE_SPEC[timeRange];
   try {
-    // Root request spans are the authoritative host-associated application-service traffic source.
+    const metricRecords = await executeDql<ThroughputRecord>(`timeseries throughputSeries=sum(dt.service.request.count, rate:1m), by:{dt.entity.host}, interval:${interval}, from:-${from}, to:now() | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`);
+    if (metricRecords.length) return new Map(metricRecords.map((record) => [hostId(record['dt.entity.host']), record]));
+  } catch {
+    // Fall through to root request spans. Service request count is preferred because it is the Grail service-throughput metric.
+  }
+  try {
     const records = await executeDql<ThroughputRecord>(`fetch spans, from:now()-${from}, to:now() | filter request.is_root_span == true | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service) | makeTimeseries throughputSeries=count(), by:{dt.entity.host}, interval:${interval} | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`);
     return new Map(records.map((record) => [hostId(record['dt.entity.host']), record]));
   } catch {
@@ -115,56 +114,17 @@ async function getApplicationThroughputSeries(timeRange: TimeRange): Promise<Map
 }
 
 export async function getHosts(managementZone?: string, timeRange: TimeRange = '24h'): Promise<Host[]> {
-  const [entities, seriesRecords, networkByHost, throughputByHost] = await Promise.all([
-    getHostEntities(managementZone),
-    getHostSeries(timeRange),
-    getNetworkSeries(timeRange),
-    getApplicationThroughputSeries(timeRange),
-  ]);
+  const [entities, seriesRecords, networkByHost, throughputByHost] = await Promise.all([getHostEntities(managementZone), getHostSeries(timeRange), getNetworkSeries(timeRange), getApplicationThroughputSeries(timeRange)]);
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
   return entities.map((entity) => {
-    const id = hostId(entity.id);
-    const series = seriesByHost.get(id);
-    const network = networkByHost.get(id);
-    const throughput = throughputByHost.get(id);
-    const cpu = numbers(series?.cpuSeries);
-    const memory = numbers(series?.memorySeries);
-    const disk = numbers(series?.diskSeries);
-    const rx = numbers(network?.rx);
-    const tx = numbers(network?.tx);
-    const appThroughput = numbers(throughput?.throughputSeries);
-    const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0;
-    const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0;
-    const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0;
-    const currentThroughput = numeric(throughput?.throughputCurrent) ?? lastNumeric(throughput?.throughputSeries) ?? 0;
-    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, appThroughput.length, 1);
-    const start = startMs(series?.timeframe ?? network?.timeframe ?? throughput?.timeframe);
-    const step = intervalMs(series?.interval ?? network?.interval ?? throughput?.interval);
-    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({
-      timestamp: new Date(start + index * step).toISOString(),
-      cpu: cpu[index] ?? 0,
-      memory: memory[index] ?? 0,
-      disk: disk[index] ?? 0,
-      networkRx: rx[index] ?? 0,
-      networkTx: tx[index] ?? 0,
-      throughput: appThroughput[index] ?? 0,
-    }));
-    const latest = telemetry[telemetry.length - 1];
-    latest.cpu = currentCpu;
-    latest.memory = currentMemory;
-    latest.disk = currentDisk;
-    latest.throughput = currentThroughput;
-    const group = String(entity.hostGroupName ?? '').trim();
-    const zones = Array.isArray(entity.managementZones) ? entity.managementZones.map(String) : [String(entity.managementZones ?? '')].filter(Boolean);
-    return {
-      id,
-      name: String(entity['entity.name'] ?? id),
-      environment: environmentFromHost(group),
-      application: group || 'Unclassified host group',
-      profile: statusFromMetrics(currentCpu, currentMemory, currentDisk),
-      managementZones: zones,
-      telemetry,
-    } satisfies Host;
+    const id = hostId(entity.id); const series = seriesByHost.get(id); const network = networkByHost.get(id); const throughput = throughputByHost.get(id);
+    const cpu = numbers(series?.cpuSeries); const memory = numbers(series?.memorySeries); const disk = numbers(series?.diskSeries); const rx = numbers(network?.rx); const tx = numbers(network?.tx); const appThroughput = numbers(throughput?.throughputSeries);
+    const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0; const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0; const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0; const currentThroughput = numeric(throughput?.throughputCurrent) ?? lastNumeric(throughput?.throughputSeries) ?? 0;
+    const points = Math.max(cpu.length, memory.length, disk.length, rx.length, tx.length, appThroughput.length, 1); const start = startMs(series?.timeframe ?? network?.timeframe ?? throughput?.timeframe); const step = intervalMs(series?.interval ?? network?.interval ?? throughput?.interval);
+    const telemetry: TelemetryPoint[] = Array.from({ length: points }, (_, index) => ({ timestamp: new Date(start + index * step).toISOString(), cpu: cpu[index] ?? 0, memory: memory[index] ?? 0, disk: disk[index] ?? 0, networkRx: rx[index] ?? 0, networkTx: tx[index] ?? 0, throughput: appThroughput[index] ?? 0 }));
+    const latest = telemetry[telemetry.length - 1]; latest.cpu = currentCpu; latest.memory = currentMemory; latest.disk = currentDisk; latest.throughput = currentThroughput;
+    const group = String(entity.hostGroupName ?? '').trim(); const zones = Array.isArray(entity.managementZones) ? entity.managementZones.map(String) : [String(entity.managementZones ?? '')].filter(Boolean);
+    return { id, name: String(entity['entity.name'] ?? id), environment: environmentFromHost(group), application: group || 'Unclassified host group', profile: statusFromMetrics(currentCpu, currentMemory, currentDisk), managementZones: zones, telemetry } satisfies Host;
   });
 }
 
