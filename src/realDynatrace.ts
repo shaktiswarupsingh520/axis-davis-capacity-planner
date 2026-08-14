@@ -6,7 +6,7 @@ interface QueryResult { records?: Array<Record<string, unknown> | null>; }
 
 const debug = (...args: unknown[]) => {
   try {
-    console.debug('[Axis Capacity]', ...args);
+    console.log('[Axis Capacity]', ...args);
   } catch {
     // Diagnostics must never break the live Dynatrace data path.
   }
