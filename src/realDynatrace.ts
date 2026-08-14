@@ -174,22 +174,46 @@ async function getHostEntities(managementZone?: string): Promise<HostEntityRecor
 async function getHostSeries(managementZone?: string): Promise<SeriesRecord[]> {
   const selected = managementZone && managementZone !== 'All Management Zones';
   const zoneFilter = selected
-    ? `
-    | filterOut isNull(dt.entity.host)
-  `
+    ? `| filterOut isNull(dt.entity.host)`
     : '';
-  return executeDql<SeriesRecord>(`
-    timeseries {
-      cpuSeries = avg(dt.host.cpu.usage)
-    },
-    by:{dt.entity.host},
-    interval:1h,
-    from:-24h
-    ${zoneFilter}
-    | fieldsAdd
-        cpuCurrent = arrayLast(cpuSeries)
-    | fields dt.entity.host, cpuSeries, cpuCurrent, timeframe, interval
-  `);
+
+  const runMetric = async (alias: 'cpuSeries' | 'memorySeries' | 'diskSeries', metric: string): Promise<SeriesRecord[]> => {
+    try {
+      const records = await executeDql<SeriesRecord>(`
+        timeseries ${alias} = avg(${metric}),
+        by:{dt.entity.host},
+        interval:1h,
+        from:-24h
+        ${zoneFilter}
+        | fieldsAdd ${alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent'} = arrayLast(${alias})
+        | fields dt.entity.host, ${alias}, ${alias === 'cpuSeries' ? 'cpuCurrent' : alias === 'memorySeries' ? 'memoryCurrent' : 'diskCurrent'}, timeframe, interval
+      `);
+      debug(`${alias} host series`, { metric, recordCount: records.length });
+      return records;
+    } catch (error) {
+      debug(`${alias} host series failed`, { metric, error: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
+  };
+
+  const [cpu, memory, disk] = await Promise.all([
+    runMetric('cpuSeries', 'dt.host.cpu.usage'),
+    runMetric('memorySeries', 'dt.host.memory.usage'),
+    runMetric('diskSeries', 'dt.host.disk.used.percent'),
+  ]);
+
+  const byHost = new Map<string, SeriesRecord>();
+  for (const record of [...cpu, ...memory, ...disk]) {
+    const id = hostId(record['dt.entity.host']);
+    if (!id) continue;
+    const current = byHost.get(id) ?? { 'dt.entity.host': record['dt.entity.host'], timeframe: record.timeframe, interval: record.interval };
+    if (record.cpuSeries !== undefined) Object.assign(current, { cpuSeries: record.cpuSeries, cpuCurrent: record.cpuCurrent, timeframe: record.timeframe, interval: record.interval });
+    if (record.memorySeries !== undefined) Object.assign(current, { memorySeries: record.memorySeries, memoryCurrent: record.memoryCurrent, timeframe: record.timeframe, interval: record.interval });
+    if (record.diskSeries !== undefined) Object.assign(current, { diskSeries: record.diskSeries, diskCurrent: record.diskCurrent, timeframe: record.timeframe, interval: record.interval });
+    byHost.set(id, current);
+  }
+
+  return [...byHost.values()];
 }
 
 async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>> {
