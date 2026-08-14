@@ -4,6 +4,10 @@ import type { Host, TelemetryPoint } from '@/types';
 export interface ManagementZoneOption { name: string; }
 interface QueryResult { records?: Array<Record<string, unknown> | null>; }
 
+const debug = (...args: unknown[]) => {
+  if (import.meta.env.DEV) console.debug('[Axis Capacity]', ...args);
+};
+
 async function executeDql<T>(query: string): Promise<T[]> {
   const response = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: 5000 } });
   let result = response.result as QueryResult | undefined;
@@ -16,7 +20,14 @@ async function executeDql<T>(query: string): Promise<T[]> {
     if (!result && state === 'RUNNING') await new Promise((resolve) => setTimeout(resolve, 300));
   }
   if (!result) throw new Error(`Dynatrace DQL query did not return a result (state: ${state}).`);
-  return (result.records ?? []).filter(Boolean) as T[];
+
+  const records = (result.records ?? []).filter(Boolean) as T[];
+  debug('DQL result', {
+    state,
+    recordCount: records.length,
+    firstRecord: records[0],
+  });
+  return records;
 }
 
 export async function getManagementZones(): Promise<ManagementZoneOption[]> {
@@ -71,16 +82,26 @@ const numeric = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const numbers = (value: unknown): number[] => {
-  if (Array.isArray(value)) return value.map((v) => numeric(v) ?? 0);
+const numericSeries = (value: unknown): Array<number | null> => {
+  if (Array.isArray(value)) return value.map((item) => numeric(item) ?? null);
   if (value && typeof value === 'object') {
     const v = value as Record<string, unknown>;
-    if ('values' in v) return numbers(v.values);
-    if ('data' in v) return numbers(v.data);
+    if ('values' in v) return numericSeries(v.values);
+    if ('data' in v) return numericSeries(v.data);
   }
   const n = numeric(value);
   return n === undefined ? [] : [n];
 };
+
+const lastNumeric = (value: unknown): number | undefined => {
+  const values = numericSeries(value);
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    if (values[i] !== null) return values[i] as number;
+  }
+  return undefined;
+};
+
+const numbers = (value: unknown): number[] => numericSeries(value).map((item) => item ?? 0);
 
 const hostId = (value: unknown): string => {
   if (Array.isArray(value)) return hostId(value[0]);
@@ -193,6 +214,11 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
 
   const seriesByHost = new Map(seriesRecords.map((record) => [hostId(record['dt.entity.host']), record]));
 
+  debug('Dynatrace series host map', {
+    recordCount: seriesRecords.length,
+    hostIds: [...seriesByHost.keys()].slice(0, 10),
+  });
+
   return entities.map((entity) => {
     const id = hostId(entity.id);
     const series = seriesByHost.get(id);
@@ -202,9 +228,25 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     const seriesMemory = numbers(series?.memorySeries);
     const seriesDisk = numbers(series?.diskSeries);
 
-    const currentCpu = numeric(series?.cpuCurrent) ?? seriesCpu.at(-1) ?? 0;
-    const currentMemory = numeric(series?.memoryCurrent) ?? seriesMemory.at(-1) ?? 0;
-    const currentDisk = numeric(series?.diskCurrent) ?? seriesDisk.at(-1) ?? 0;
+    const currentCpu = numeric(series?.cpuCurrent) ?? lastNumeric(series?.cpuSeries) ?? 0;
+    const currentMemory = numeric(series?.memoryCurrent) ?? lastNumeric(series?.memorySeries) ?? 0;
+    const currentDisk = numeric(series?.diskCurrent) ?? lastNumeric(series?.diskSeries) ?? 0;
+
+    debug('Host metric mapping', {
+      entityId: id,
+      hostName: entity['entity.name'],
+      matchedSeries: Boolean(series),
+      seriesHostId: series ? hostId(series['dt.entity.host']) : undefined,
+      rawCpuCurrent: series?.cpuCurrent,
+      rawMemoryCurrent: series?.memoryCurrent,
+      rawDiskCurrent: series?.diskCurrent,
+      rawCpuSeries: series?.cpuSeries,
+      rawMemorySeries: series?.memorySeries,
+      rawDiskSeries: series?.diskSeries,
+      parsedCpu: currentCpu,
+      parsedMemory: currentMemory,
+      parsedDisk: currentDisk,
+    });
 
     const rx = numbers(network?.rx);
     const tx = numbers(network?.tx);
@@ -225,6 +267,15 @@ export async function getHosts(managementZone?: string): Promise<Host[]> {
     latest.cpu = currentCpu;
     latest.memory = currentMemory;
     latest.disk = currentDisk;
+
+    debug('Final host telemetry', {
+      hostId: id,
+      hostName: entity['entity.name'],
+      cpu: latest.cpu,
+      memory: latest.memory,
+      disk: latest.disk,
+      telemetryLength: telemetry.length,
+    });
 
     const name = String(entity['entity.name'] ?? id ?? 'Unknown host');
     const group = String(entity.hostGroupName ?? '').trim();
