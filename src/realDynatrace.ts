@@ -180,19 +180,15 @@ async function getHostSeries(managementZone?: string): Promise<SeriesRecord[]> {
     : '';
   return executeDql<SeriesRecord>(`
     timeseries {
-      cpuSeries = avg(dt.host.cpu.usage),
-      memorySeries = avg(dt.host.memory.usage),
-      diskSeries = avg(dt.host.disk.used.percent)
+      cpuSeries = avg(dt.host.cpu.usage)
     },
     by:{dt.entity.host},
     interval:1h,
     from:-24h
     ${zoneFilter}
     | fieldsAdd
-        cpuCurrent = arrayLast(cpuSeries),
-        memoryCurrent = arrayLast(memorySeries),
-        diskCurrent = arrayLast(diskSeries)
-    | fields dt.entity.host, cpuSeries, memorySeries, diskSeries, cpuCurrent, memoryCurrent, diskCurrent, timeframe, interval
+        cpuCurrent = arrayLast(cpuSeries)
+    | fields dt.entity.host, cpuSeries, cpuCurrent, timeframe, interval
   `);
 }
 
@@ -200,7 +196,7 @@ async function getNetworkSeries(): Promise<Map<string, Record<string, unknown>>>
   const records = await executeDql<Record<string, unknown>>(`
     timeseries {
       rx = avg(dt.host.net.nic.link_util_rx),
-      tx = avg(dt.host.net.nic.link_util_tx)
+      tx = avg(dt.host.net.net.nic.link_util_tx)
     },
     by:{dt.entity.host},
     interval:1h,
