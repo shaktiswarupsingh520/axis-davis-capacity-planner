@@ -75,8 +75,11 @@ function addSimulationChart() {
     <div class="chart-legend"><span><i class="legend-dot actual-dot"/>Current traffic baseline</span><span><i class="legend-dot forecast-dot"/>Simulated traffic</span></div>
     <div class="chart-insights"><div><small>Current baseline</small><strong>${current.toFixed(1)} req/min</strong></div><div><small>Simulated endpoint</small><strong>${simulated.toFixed(1)} req/min</strong></div><div><small>Traffic delta</small><strong>+${Math.max(0, simulated - current).toFixed(1)} req/min</strong></div><div><small>Scenario assumption</small><strong>Linear ramp</strong></div></div>`;
 
+  const kpis = panel.querySelector('.simulation-kpis');
   const result = panel.querySelector('.simulation-result');
-  if (result) result.after(chart); else panel.appendChild(chart);
+  if (kpis) kpis.after(chart);
+  else if (result) result.after(chart);
+  else panel.appendChild(chart);
 }
 
 function enhanceForecastSummary() {
