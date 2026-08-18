@@ -12,14 +12,15 @@ function pdfLine(page: string[], x1: number, y1: number, x2: number, y2: number,
 }
 function readNumericTicks(svg: SVGSVGElement) {
   return [...svg.querySelectorAll<SVGTextElement>('.chart-axis-label')]
-    .map((node) => node.textContent?.trim() ?? '')
-    .filter((text) => /^-?\d/.test(text))
+    .map((node) => ({ label: node.textContent?.trim() ?? '', y: Number(node.getAttribute('y') ?? NaN) }))
+    .filter((item) => /^-?\d+(?:\.\d+)?%?$/.test(item.label) && Number.isFinite(item.y))
+    .sort((a, b) => a.y - b.y)
     .slice(0, 5);
 }
 function readXLabels(svg: SVGSVGElement) {
   return [...svg.querySelectorAll<SVGTextElement>('.chart-axis-label')]
     .map((node) => node.textContent?.trim() ?? '')
-    .filter((text) => text && !/^-?\d/.test(text));
+    .filter((text) => text && !/^-?\d+(?:\.\d+)?%?$/.test(text));
 }
 function polylineToPdf(svg: SVGSVGElement, page: string[], points: string, box: { x: number; y: number; w: number; h: number }, color: string, fill = false) {
   const view = svg.viewBox.baseVal;
@@ -36,14 +37,22 @@ function chartToPdf(chart: ChartInfo, page: string[], x: number, y: number, w: n
   const unit = /throughput/i.test(chart.title) ? 'req/min' : /network/i.test(chart.title) ? 'bytes/s' : /cpu|memory|disk|utilization/i.test(chart.title) ? '%' : chart.unit || 'value';
   pdfText(page, x, y + h + 22, chart.title, 11, true);
   pdfText(page, x + w - 90, y + h + 22, `Unit: ${unit}`, 7);
+
   const ticks = readNumericTicks(svg);
-  const safeTicks = ticks.length >= 2 ? ticks : ['100', '75', '50', '25', '0'];
-  safeTicks.forEach((label, index) => {
-    // SVG labels are top-to-bottom; PDF coordinates are bottom-to-top.
-    const yy = y + h * (1 - index / Math.max(1, safeTicks.length - 1));
-    pdfLine(page, x, yy, x + w, yy);
-    pdfText(page, x - 35, yy - 3, label, 7);
-  });
+  if (ticks.length >= 2) {
+    for (const tick of ticks) {
+      const yy = y + h - (tick.y / Math.max(1, svg.viewBox.baseVal.height)) * h;
+      pdfLine(page, x, yy, x + w, yy);
+      pdfText(page, x - 35, yy - 3, tick.label, 7);
+    }
+  } else {
+    ['100', '75', '50', '25', '0'].forEach((label, index) => {
+      const yy = y + h * (1 - index / 4);
+      pdfLine(page, x, yy, x + w, yy);
+      pdfText(page, x - 35, yy - 3, label, 7);
+    });
+  }
+
   const threshold = svg.querySelector<SVGLineElement>('.threshold-line');
   if (threshold) {
     const y1 = Number(threshold.getAttribute('y1') ?? 0);
@@ -63,9 +72,9 @@ function chartToPdf(chart: ChartInfo, page: string[], x: number, y: number, w: n
   for (const line of lines) {
     const classes = line.getAttribute('class') ?? '';
     const points = line.getAttribute('points') ?? '';
-    if (classes.includes('scenario-line.actual') || classes.includes('chart-line.actual')) polylineToPdf(svg, page, points, box, '0.12 0.43 0.95');
-    else if (classes.includes('scenario-line.forecast') || classes.includes('chart-line.forecast')) polylineToPdf(svg, page, points, box, '0.92 0.43 0.12');
-    else if (classes.includes('chart-line.upper')) polylineToPdf(svg, page, points, box, '0.82 0.58 0.14');
+    if (classes.includes('scenario-line actual') || classes.includes('chart-line actual')) polylineToPdf(svg, page, points, box, '0.12 0.43 0.95');
+    else if (classes.includes('scenario-line forecast') || classes.includes('chart-line forecast')) polylineToPdf(svg, page, points, box, '0.92 0.43 0.12');
+    else if (classes.includes('chart-line upper')) polylineToPdf(svg, page, points, box, '0.82 0.58 0.14');
   }
   const xLabels = readXLabels(svg);
   pdfText(page, x, y - 16, xLabels[0] || 'Start', 7);
@@ -156,7 +165,7 @@ export function installPdfReportOverride() {
       clickButton(/Back to inventory/i); await sleep(250);
     }
     clickNav('Capacity Forecast'); await sleep(350); snapshots.push(collectSnapshot());
-    clickNav('Simulation'); await sleep(450); snapshots.push(collectSnapshot());
+    clickNav('Simulation'); await sleep(600); snapshots.push(collectSnapshot());
     buildPdf(snapshots);
   }, true);
 }
