@@ -44,7 +44,7 @@ function chartToPdf(chart: ChartInfo, page: string[], x: number, y: number, w: n
   pdfText(page, x - 14, y + h + 7, 'Value', 8);
   pdfText(page, x + 8, y + h - 10, 'Historical', 8); if (chart.svg.querySelector('.chart-line.forecast')) pdfText(page, x + 92, y + h - 10, 'Dynatrace forecast', 8); if (chart.svg.querySelector('.forecast-band')) pdfText(page, x + 222, y + h - 10, '90% prediction band', 8);
 }
-function collectTextCards() { return [...document.querySelectorAll('.metric-card')].slice(0, 8).map((element) => element.innerText.replace(/\n+/g, ' · ').trim()).filter(Boolean); }
+function collectTextCards() { return [...document.querySelectorAll<HTMLElement>('.metric-card')].slice(0, 8).map((element) => element.innerText.replace(/\n+/g, ' · ').trim()).filter(Boolean); }
 function collectCharts(): ChartInfo[] { return [...document.querySelectorAll('.chart-wrap svg')].map((svg) => { const title = svg.parentElement?.querySelector('.chart-title-row strong')?.textContent?.trim() || svg.parentElement?.parentElement?.querySelector('h2')?.textContent?.trim() || 'Trend'; return { title, svg: svg as SVGSVGElement }; }); }
 function collectPageState() { return { title: document.querySelector('.page-title h1')?.textContent?.trim() || 'Capacity Planner', eyebrow: document.querySelector('.page-title .eyebrow')?.textContent?.trim() || '', cards: collectTextCards(), charts: collectCharts(), ai: document.querySelector('.ai-summary')?.textContent?.trim() || '', verification: document.querySelector('.status-panel')?.textContent?.trim() || '' }; }
 
