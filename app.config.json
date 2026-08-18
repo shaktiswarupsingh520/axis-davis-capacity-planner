@@ -2,14 +2,14 @@
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.21",
+    "version": "1.0.22",
     "description": "Axis infrastructure capacity planning and forecasting.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
       { "name": "storage:metrics:read", "comment": "Read host and service metrics from Grail" },
       { "name": "storage:buckets:read", "comment": "Read Grail metric buckets required by timeseries queries" },
       { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" },
-      { "name": "storage:spans:read", "comment": "Read request-root spans for throughput verification" },
+      { "name": "storage:spans:read", "comment": "Read request-root spans for application-service throughput verification" },
       { "name": "davis:analyzers:read", "comment": "Read Dynatrace Intelligence analyzer definitions" },
       { "name": "davis:analyzers:execute", "comment": "Execute Dynatrace Intelligence Generic Forecast Analyzer" },
       { "name": "davis-copilot:conversations:execute", "comment": "Generate AI-assisted capacity summaries using Dynatrace Assist" }
