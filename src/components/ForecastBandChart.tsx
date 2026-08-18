@@ -1,0 +1,12 @@
+interface Props { historical: number[]; forecast: number[]; lower: number[]; upper: number[]; metric: string; horizon: number; }
+const clean = (values: number[]) => values.filter((value) => Number.isFinite(value));
+export default function ForecastBandChart({ historical, forecast, lower, upper, metric, horizon }: Props) {
+  const h = clean(historical), f = clean(forecast), lo = clean(lower), up = clean(upper);
+  const all = [...h, ...f, ...lo, ...up];
+  const max = Math.max(metric === 'cpu' || metric === 'memory' || metric === 'disk' ? 100 : 1, ...all);
+  const width = 920, height = 330, pad = 48, histWidth = f.length ? 560 : width - pad, forecastWidth = width - pad - histWidth;
+  const y = (value: number) => height - pad - (value / Math.max(1, max)) * (height - pad * 1.35);
+  const points = (values: number[], startX: number, span: number) => values.map((value, index) => `${startX + (values.length === 1 ? span / 2 : index * span / Math.max(1, values.length - 1))},${y(value)}`).join(' ');
+  const band = up.length && lo.length ? `${points(up, pad + histWidth, forecastWidth)} ${points([...lo].reverse(), pad + histWidth, forecastWidth)}` : '';
+  return <div className="forecast-band-wrap"><div className="forecast-band-meta"><span>Observed: 30-day learning history</span><span>Forecast: {horizon} days · 90% prediction interval</span></div><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${metric} historical and forecast trend`}><line x1={pad} x2={width - pad} y1={height - pad} y2={height - pad} className="chart-axis"/><line x1={pad} x2={width - pad} y1={y(max)} y2={y(max)} className="chart-grid"/><line x1={pad} x2={width - pad} y1={y(max / 2)} y2={y(max / 2)} className="chart-grid"/>{band && <polygon points={band} className="forecast-band"/>}{h.length > 1 && <polyline points={points(h, pad, histWidth - pad)} className="chart-line actual"/>}{f.length > 0 && <polyline points={points(f, pad + histWidth, forecastWidth)} className="chart-line forecast"/>}{up.length > 0 && <polyline points={points(up, pad + histWidth, forecastWidth)} className="chart-line upper"/>}<line x1={pad + histWidth} x2={pad + histWidth} y1={20} y2={height - pad} className="forecast-split"/><text x={pad} y={height - 12}>Historical</text><text x={pad + histWidth + 8} y={height - 12}>Forecast</text></svg><div className="chart-legend"><span><i className="legend-dot actual-dot"/>Historical</span><span><i className="legend-dot forecast-dot"/>Forecast</span><span><i className="legend-dot threshold-dot"/>90% prediction band</span></div></div>;
+}
