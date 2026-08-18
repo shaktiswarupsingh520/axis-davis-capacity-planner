@@ -1,8 +1,9 @@
-interface LineChartProps { series: number[]; forecast?: number[]; upper?: number[]; threshold?: number; labels?: string[] }
+interface LineChartProps { series?: number[]; values?: number[]; forecast?: number[]; upper?: number[]; threshold?: number; labels?: string[] }
 
 function points(values: number[], width: number, height: number, offset: number, max: number) { return values.map((value, index) => `${offset + index * (width / Math.max(1, values.length - 1))},${height - 18 - (value / max) * (height - 34)}`).join(' '); }
 
-export function LineChart({ series, forecast = [], upper = [], threshold }: LineChartProps) {
+export function LineChart({ series: seriesProp = [], values, forecast = [], upper = [], threshold }: LineChartProps) {
+  const series = values ?? seriesProp;
   const all = [...series, ...forecast, ...upper, threshold ?? 0];
   const max = Math.max(100, ...all);
   const width = 720; const height = 240; const split = series.length ? width * series.length / Math.max(1, series.length + forecast.length) : width;

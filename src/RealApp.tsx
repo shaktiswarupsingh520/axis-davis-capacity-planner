@@ -1,0 +1,207 @@
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Activity, AlertTriangle, BarChart3, CheckCircle2, Cpu, Database, FileText, Gauge, HardDrive, LayoutDashboard, Loader2, Moon, RefreshCw, Server, SlidersHorizontal, Sparkles, Sun, Zap } from 'lucide-react';
+import type { ForecastHorizon, Host, MetricKey, TimeRange } from '@/types';
+import { getBusinessInsights, runCapacitySimulation } from '@/services';
+import { getHostRisk } from '@/services/hostStatus';
+import { LineChart, MetricCard, StatusBadge } from '@/components';
+import { dynatraceDataProvider, type ManagementZoneOption } from './realDynatrace';
+import { generateAssistCapacitySummary, getDynatraceForecasts, type AiCapacitySummary, type DynatraceForecast } from './dynatraceIntelligence';
+
+type Page = 'overview' | 'inventory' | 'forecast' | 'simulation';
+type DetailMetric = 'cpu' | 'memory' | 'disk' | 'networkRx' | 'networkTx' | 'throughput';
+
+const navItems = [
+  { id: 'overview' as Page, label: 'Overview', icon: LayoutDashboard },
+  { id: 'inventory' as Page, label: 'Host Inventory', icon: Server },
+  { id: 'forecast' as Page, label: 'Capacity Forecast', icon: BarChart3 },
+  { id: 'simulation' as Page, label: 'Simulation', icon: SlidersHorizontal },
+];
+
+const TIMEFRAME_OPTIONS: Array<{ value: TimeRange; label: string }> = [
+  { value: '1h', label: 'Last 1 hour' },
+  { value: '6h', label: 'Last 6 hours' },
+  { value: '24h', label: 'Last 24 hours' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '30d', label: 'Last 30 days' },
+];
+const FORECAST_OPTIONS: ForecastHorizon[] = [30, 60, 90];
+
+const average = (hosts: Host[], key: 'cpu' | 'memory' | 'disk') => hosts.length ? Math.round(hosts.reduce((s, h) => s + (h.telemetry.at(-1)?.[key] ?? 0), 0) / hosts.length) : 0;
+const averageThroughput = (hosts: Host[]) => hosts.length ? Math.round(hosts.reduce((s, h) => s + (h.telemetry.at(-1)?.throughput ?? 0), 0) / hosts.length) : 0;
+const rangeLabel = (range: TimeRange) => TIMEFRAME_OPTIONS.find((x) => x.value === range)?.label ?? range;
+const rate = (v: number) => v >= 1048576 ? `${(v / 1048576).toFixed(1)} MB/s` : v >= 1024 ? `${(v / 1024).toFixed(1)} KB/s` : `${Math.round(v)} B/s`;
+
+function escapePdf(v: string) { return v.replace(/[\\()]/g, ' ').replace(/[^\x20-\x7E]/g, ' '); }
+function downloadPdf(lines: string[]) {
+  const body = ['Axis Capacity Planner — Executive Capacity Report', '', ...lines].slice(0, 75);
+  let content = 'BT\n/F1 16 Tf\n40 750 Td\n';
+  body.forEach((line, i) => { if (i === 1) content += '/F1 10 Tf\n'; if (i > 0) content += '0 -14 Td '; content += `(${escapePdf(line)}) Tj\n`; });
+  content += 'ET';
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>', `<< /Length ${content.length} >>\nstream\n${content}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  let pdf = '%PDF-1.4\n'; const offsets = [0]; objects.forEach((o, i) => { offsets.push(pdf.length); pdf += `${i + 1} 0 obj\n${o}\nendobj\n`; }); const xref = pdf.length;
+  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((x) => `${String(x).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' })); a.download = 'axis-capacity-report.pdf'; a.click();
+}
+
+export default function RealApp() {
+  const [zones, setZones] = useState<ManagementZoneOption[]>([]);
+  const [zone, setZone] = useState('All Management Zones');
+  const [currentRange, setCurrentRange] = useState<TimeRange>('24h');
+  const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>(30);
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [page, setPage] = useState<Page>('overview');
+  const [selected, setSelected] = useState<Host | null>(null);
+  const [dark, setDark] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [updated, setUpdated] = useState<Date | null>(null);
+  const [ai, setAi] = useState<AiCapacitySummary | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [forecastData, setForecastData] = useState<Array<{ host: Host; forecast: DynatraceForecast }>>([]);
+  const [forecastMetricKey, setForecastMetricKey] = useState<MetricKey>('cpu');
+  const [forecastLoading, setForecastLoading] = useState(false);
+
+  const load = async (z = zone, range = currentRange) => {
+    setLoading(true);
+    setError('');
+    try {
+      const [zResult, h] = await Promise.all([
+        zones.length ? Promise.resolve(zones) : dynatraceDataProvider.getManagementZones(),
+        dynatraceDataProvider.getHosts(z, range),
+      ]);
+      if (!zones.length) setZones(zResult);
+      setHosts(h);
+      setUpdated(new Date());
+      setAi(null);
+      setForecastData([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to read Dynatrace data');
+      setHosts([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load('All Management Zones', '24h'); }, []);
+  useEffect(() => { if (zones.length) void load(zone, currentRange); }, [zone, currentRange]);
+
+  const getForecastForReport = async () => {
+    const result = await getDynatraceForecasts(hosts, forecastMetricKey, forecastHorizon);
+    setForecastData(result);
+    return result;
+  };
+
+  const runAi = async () => {
+    setAiLoading(true);
+    try {
+      const forecasts = forecastData.length ? forecastData : await getForecastForReport();
+      const summary = await generateAssistCapacitySummary(hosts, zone, forecasts);
+      setAi(summary);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Dynatrace Assist summary failed');
+    } finally { setAiLoading(false); }
+  };
+
+  const createReport = async () => {
+    setAiLoading(true);
+    try {
+      const forecasts = forecastData.length ? forecastData : await getForecastForReport();
+      const summary = await generateAssistCapacitySummary(hosts, zone, forecasts);
+      setAi(summary);
+      const risky = [...hosts].sort((a, b) => Math.max(b.telemetry.at(-1)?.cpu ?? 0, b.telemetry.at(-1)?.memory ?? 0, b.telemetry.at(-1)?.disk ?? 0) - Math.max(a.telemetry.at(-1)?.cpu ?? 0, a.telemetry.at(-1)?.memory ?? 0, a.telemetry.at(-1)?.disk ?? 0));
+      const avgTraffic = averageThroughput(hosts);
+      const simulatedTraffic = Math.round(avgTraffic * (1 + 0.2));
+      const lines = [
+        `Management Zone: ${zone}`,
+        `Current data timeframe: ${rangeLabel(currentRange)}`,
+        `Forecast horizon: ${forecastHorizon} days`,
+        `Generated: ${new Date().toLocaleString()}`,
+        'Data source: Live Dynatrace Grail telemetry',
+        'Forecast source: Dynatrace Intelligence Generic Forecast Analyzer',
+        'AI assessment source: Dynatrace Assist',
+        `Total hosts: ${hosts.length}`,
+        `Average CPU: ${average(hosts, 'cpu')}%`,
+        `Average memory: ${average(hosts, 'memory')}%`,
+        `Average disk: ${average(hosts, 'disk')}%`,
+        `Average application throughput: ${avgTraffic} req/min`,
+        `Example simulated throughput (+20%): ${simulatedTraffic} req/min`,
+        '',
+        'AI-ASSISTED CAPACITY ASSESSMENT',
+        ...summary.text.split('\n').filter(Boolean),
+        '',
+        'TOP CAPACITY RISKS',
+        ...risky.slice(0, 10).map((h, i) => { const p = h.telemetry.at(-1); return `${i + 1}. ${h.name} | CPU ${Math.round(p?.cpu ?? 0)}% | MEM ${Math.round(p?.memory ?? 0)}% | DISK ${Math.round(p?.disk ?? 0)}% | APP ${Math.round(p?.throughput ?? 0)} req/min`; }),
+        '',
+        'Dynatrace Intelligence uses AI. Always verify important information and decisions.',
+      ];
+      downloadPdf(lines);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to generate report');
+    } finally { setAiLoading(false); }
+  };
+
+  return <div className={dark ? 'app dark' : 'app'}>
+    <aside className="sidebar"><div className="brand"><div className="brand-mark"><Gauge size={22}/></div><div><strong>AXIS</strong><span>Capacity Planner</span></div></div><div className="mode-pill"><span className="live-dot"/>Live Dynatrace</div><nav>{navItems.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(id); setSelected(null); }}><Icon size={18}/><span>{label}</span></button>)}</nav><div className="sidebar-footer"><Database size={17}/><div><small>Data provider</small><strong>Dynatrace DQL</strong></div></div></aside>
+    <main className="main">
+      <header className="topbar">
+        <div className="breadcrumbs"><span>Infrastructure</span><span>›</span><strong>Capacity Planner</strong></div>
+        <div className="top-actions">
+          <label className="mz-selector"><span>Management Zone</span><select value={zone} onChange={(e) => { setZone(e.target.value); setSelected(null); }}><option>All Management Zones</option>{zones.map((z) => <option key={z.name}>{z.name}</option>)}</select></label>
+          <label className="mz-selector"><span>Current data</span><select value={currentRange} onChange={(e) => setCurrentRange(e.target.value as TimeRange)}>{TIMEFRAME_OPTIONS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select></label>
+          <label className="mz-selector"><span>Forecast horizon</span><select value={forecastHorizon} onChange={(e) => { setForecastHorizon(Number(e.target.value) as ForecastHorizon); setForecastData([]); }}><option value={30}>30 days</option><option value={60}>60 days</option><option value={90}>90 days</option></select></label>
+          <div className="source-control"><span className="live-dot"/>Live Dynatrace</div>
+          <button className="icon-button" onClick={() => void load()} aria-label="Refresh"><RefreshCw size={18}/></button>
+          <button className="icon-button" onClick={() => setDark(!dark)} aria-label="Theme">{dark ? <Sun size={18}/> : <Moon size={18}/>}</button>
+        </div>
+      </header>
+      {error && <div className="notice"><AlertTriangle size={17}/><span>{error}</span></div>}
+      {loading && <div className="loading-bar"><RefreshCw size={15}/> Reading {rangeLabel(currentRange)} from live Dynatrace…</div>}
+      {selected ? <HostDetail host={selected} back={() => setSelected(null)} timeRange={currentRange}/> : page === 'overview' ? <Overview hosts={hosts} updated={updated} setPage={setPage} select={setSelected} ai={ai} aiLoading={aiLoading} runAi={runAi} timeRange={currentRange}/> : page === 'inventory' ? <Inventory hosts={hosts} select={setSelected}/> : page === 'forecast' ? <Forecast hosts={hosts} metric={forecastMetricKey} horizon={forecastHorizon} setMetric={setForecastMetricKey} data={forecastData} setData={setForecastData} loading={forecastLoading} setLoading={setForecastLoading}/> : <Simulation hosts={hosts}/>}
+    </main>
+    <button className="pdf-report-button" onClick={() => void createReport()} disabled={aiLoading}><FileText size={16}/>{aiLoading ? 'Generating AI Report…' : 'Generate PDF Report'}</button>
+  </div>;
+}
+
+function PageTitle({ eyebrow, title, children }: { eyebrow: string; title: string; children?: ReactNode }) { return <div className="page-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1></div>{children}</div>; }
+
+function Overview({ hosts, updated, setPage, select, ai, aiLoading, runAi, timeRange }: { hosts: Host[]; updated: Date | null; setPage: (p: Page) => void; select: (h: Host) => void; ai: AiCapacitySummary | null; aiLoading: boolean; runAi: () => void; timeRange: TimeRange }) {
+  const cpu = average(hosts, 'cpu'); const mem = average(hosts, 'memory'); const disk = average(hosts, 'disk'); const throughput = averageThroughput(hosts); const high = hosts.filter((h) => getHostRisk(h) === 'High').length; const critical = hosts.filter((h) => getHostRisk(h) === 'Critical').length;
+  return <div className="content"><PageTitle eyebrow="Live executive overview" title="Capacity at a glance"><div className="date-chip"><Activity size={16}/> {updated ? `Updated ${updated.toLocaleTimeString()} · ${rangeLabel(timeRange)}` : 'Connecting…'}</div></PageTitle>
+    <section className="kpi-grid"><MetricCard label="Total Hosts" value={String(hosts.length)} detail="Live from Dynatrace" icon={<Server/>}/><MetricCard label="Healthy / Stable" value={String(Math.max(0, hosts.length - high - critical))} detail="Current estate health" icon={<CheckCircle2/>} tone="green"/><MetricCard label="High Risk" value={String(high)} detail="Requires monitoring" icon={<AlertTriangle/>} tone="amber"/><MetricCard label="Critical" value={String(critical)} detail="Immediate attention" icon={<AlertTriangle/>} tone="red"/></section>
+    <section className="overview-grid"><article className="panel resource-panel"><div className="panel-heading"><div><span className="eyebrow">Real telemetry · {rangeLabel(timeRange)}</span><h2>Resource utilization</h2></div><button className="text-button" onClick={() => setPage('forecast')}>View Dynatrace forecast →</button></div><div className="resource-list"><Resource label="Average CPU" value={cpu} icon={<Cpu/>}/><Resource label="Average memory" value={mem} icon={<Database/>}/><Resource label="Average disk" value={disk} icon={<HardDrive/>}/></div><div className="traffic-summary"><MetricCard label="Average service throughput" value={`${throughput} req/min`} detail="Application traffic baseline" icon={<Zap/>} tone="green"/></div></article><article className="panel status-panel"><div className="panel-heading"><div><span className="eyebrow">Fleet distribution</span><h2>Capacity status</h2></div></div><div className="donut-wrap"><div className="donut"><div><strong>{hosts.length}</strong><span>hosts</span></div></div><div className="donut-legend"><Legend label="Healthy / stable" value={Math.max(0, hosts.length - high - critical)} color="green"/><Legend label="High risk" value={high} color="amber"/><Legend label="Critical" value={critical} color="red"/></div></div></article></section>
+    <section className="panel ai-panel"><div className="ai-header"><div><span className="eyebrow ai-eyebrow"><Sparkles size={14}/> Dynatrace Intelligence</span><h2>AI-assisted capacity assessment</h2><p>Uses live telemetry, application throughput and Dynatrace Intelligence forecast results.</p></div><button className="ai-button" onClick={runAi} disabled={aiLoading}>{aiLoading ? <><Loader2 size={16} className="spin"/> Analyzing…</> : <><Sparkles size={16}/> Generate AI Assessment</>}</button></div>{ai ? <div className="ai-summary"><pre>{ai.text}</pre><small>Generated {new Date(ai.generatedAt).toLocaleString()} · {ai.source}. Dynatrace Intelligence uses AI. Always verify important information and decisions.</small></div> : <div className="ai-empty">Generate an executive summary with risks, prioritized actions and 30/60/90-day recommendations.</div>}</section>
+    <section className="panel table-panel"><div className="panel-heading"><div><span className="eyebrow">Attention required</span><h2>Hosts to watch</h2></div><button className="text-button" onClick={() => setPage('inventory')}>View all hosts →</button></div><HostTable hosts={hosts.filter((h) => getHostRisk(h) !== 'Low').slice(0, 10)} select={select}/></section>
+  </div>;
+}
+
+function Resource({ label, value, icon }: { label: string; value: number; icon: ReactNode }) { return <div className="resource-row"><div className="resource-icon blue">{icon}</div><span>{label}</span><div className="progress"><i className="blue" style={{ width: `${Math.min(value, 100)}%` }}/></div><strong>{value}%</strong></div>; }
+function Legend({ label, value, color }: { label: string; value: number; color: string }) { return <div><span><i className={`legend-square ${color}`}/>{label}</span><strong>{value}</strong></div>; }
+
+function HostTable({ hosts, select }: { hosts: Host[]; select: (h: Host) => void }) { return <div className="table-scroll">{hosts.length ? <table><thead><tr><th>Host name</th><th>Environment</th><th>Application</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Network RX/TX</th><th>App throughput</th><th>Status</th></tr></thead><tbody>{hosts.map((h) => { const p = h.telemetry.at(-1)!; return <tr key={h.id} onClick={() => select(h)}><td><strong className="host-link">{h.name}</strong><small>{h.id}</small></td><td>{h.environment}</td><td>{h.application}</td><td><MetricValue value={p.cpu}/></td><td><MetricValue value={p.memory}/></td><td><MetricValue value={p.disk}/></td><td>{rate(p.networkRx)} / {rate(p.networkTx)}</td><td><strong>{Math.round(p.throughput ?? 0)} req/min</strong></td><td><StatusBadge value={h.profile}/></td></tr>; })}</tbody></table> : <div className="empty-state"><Server size={24}/><strong>No hosts returned for this scope</strong></div>}</div>; }
+function MetricValue({ value }: { value: number }) { return <span className={value >= 80 ? 'value-high' : value >= 70 ? 'value-medium' : ''}>{Math.round(value)}%</span>; }
+
+function Inventory({ hosts, select }: { hosts: Host[]; select: (h: Host) => void }) { const [q, setQ] = useState(''); const [risk, setRisk] = useState('All risks'); const filtered = hosts.filter((h) => `${h.name} ${h.application} ${h.environment}`.toLowerCase().includes(q.toLowerCase()) && (risk === 'All risks' || getHostRisk(h) === risk)); return <div className="content"><PageTitle eyebrow="Live infrastructure estate" title="Host inventory"><div className="count-chip"><Server size={15}/>{filtered.length} of {hosts.length} hosts</div></PageTitle><section className="panel table-panel"><div className="filter-row"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search host, host group, environment…"/><select value={risk} onChange={(e) => setRisk(e.target.value)}><option>All risks</option><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></div><HostTable hosts={filtered} select={select}/></section></div>; }
+
+function HostDetail({ host, back, timeRange }: { host: Host; back: () => void; timeRange: TimeRange }) {
+  const [metric, setMetric] = useState<DetailMetric>('cpu'); const p = host.telemetry.at(-1)!;
+  const values = host.telemetry.map((x) => metric === 'networkRx' ? x.networkRx : metric === 'networkTx' ? x.networkTx : metric === 'throughput' ? x.throughput ?? 0 : x[metric]);
+  const label = metric === 'networkRx' ? 'Network RX (bytes/s)' : metric === 'networkTx' ? 'Network TX (bytes/s)' : metric === 'throughput' ? 'Application Throughput (requests/min)' : metric.toUpperCase();
+  return <div className="content"><button className="back-button" onClick={back}>← Back to inventory</button><PageTitle eyebrow={`Live host detail · ${rangeLabel(timeRange)}`} title={host.name}><StatusBadge value={host.profile}/></PageTitle><div className="detail-meta"><span><Server size={15}/> {host.environment}</span><span><Database size={15}/> {host.application}</span><span><Activity size={15}/> {host.id}</span></div><section className="metric-strip"><MetricCard label="CPU" value={`${Math.round(p.cpu)}%`} detail="Current" icon={<Cpu/>}/><MetricCard label="Memory" value={`${Math.round(p.memory)}%`} detail="Current" icon={<Database/>} tone="teal"/><MetricCard label="Disk" value={`${Math.round(p.disk)}%`} detail="Current" icon={<HardDrive/>} tone="amber"/><MetricCard label="Network RX / TX" value={`${rate(p.networkRx)} / ${rate(p.networkTx)}`} detail="Real NIC bytes/sec" icon={<Activity/>} tone="green"/><MetricCard label="Service Throughput" value={`${Math.round(p.throughput ?? 0)} req/min`} detail="Real application-service traffic" icon={<BarChart3/>}/></section><section className="panel chart-panel"><div className="panel-heading"><div><span className="eyebrow">{rangeLabel(timeRange)} live telemetry</span><h2>{label}</h2></div><select value={metric} onChange={(e) => setMetric(e.target.value as DetailMetric)}><option value="cpu">CPU</option><option value="memory">Memory</option><option value="disk">Disk</option><option value="networkRx">Network RX</option><option value="networkTx">Network TX</option><option value="throughput">Throughput</option></select></div><LineChart values={values} threshold={['cpu', 'memory', 'disk'].includes(metric) ? 80 : undefined}/></section></div>;
+}
+
+function Forecast({ hosts, metric, horizon, setMetric, data, setData, loading, setLoading }: { hosts: Host[]; metric: MetricKey; horizon: ForecastHorizon; setMetric: (m: MetricKey) => void; data: Array<{ host: Host; forecast: DynatraceForecast }>; setData: (d: Array<{ host: Host; forecast: DynatraceForecast }>) => void; loading: boolean; setLoading: (v: boolean) => void }) {
+  const [selectedHost, setSelectedHost] = useState<string>('');
+  useEffect(() => { if (!hosts.length) return; let active = true; setLoading(true); void getDynatraceForecasts(hosts, metric, horizon).then((r) => { if (active) setData(r); }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, [hosts, metric, horizon]);
+  const risky = data.filter(({ forecast }) => { const peak = Math.max(...forecast.forecast, 0); return peak >= 80 || Math.max(...forecast.upperBound, 0) >= 80; }).sort((a, b) => Math.max(...b.forecast.forecast, 0) - Math.max(...a.forecast.forecast, 0));
+  const selected = data.find((x) => x.host.id === selectedHost) ?? risky[0] ?? data[0];
+  return <div className="content"><PageTitle eyebrow="Predictive capacity planning" title="Capacity forecast"><div className="filter-row"><select value={metric} onChange={(e) => setMetric(e.target.value as MetricKey)}><option value="cpu">CPU</option><option value="memory">Memory</option><option value="disk">Disk</option></select><span className="forecast-horizon-chip"><Sparkles size={14}/> {horizon}-day Dynatrace analyzer</span></div></PageTitle><section className="kpi-grid"><MetricCard label="Hosts analysed" value={String(hosts.length)} detail="Live Dynatrace telemetry" icon={<Server/>}/><MetricCard label="Dynatrace AI forecast" value={loading ? '…' : String(data.filter((x) => x.forecast.source === 'Dynatrace Intelligence').length)} detail="Generic Forecast Analyzer" icon={<Sparkles/>} tone="green"/><MetricCard label="Forecast risk" value={loading ? '…' : String(risky.length)} detail={`${metric} · ${horizon} days`} icon={<AlertTriangle/>} tone="amber"/></section><section className="panel forecast-panel"><div className="forecast-source"><Sparkles size={16}/><strong>Dynatrace Intelligence Forecast Analyzer</strong><span>30-day historical Dynatrace input · 1-hour resolution · analyzer-controlled forecast dates · 90% prediction interval</span></div>{loading ? <div className="empty-state"><Loader2 className="spin" size={24}/><strong>Running Dynatrace Intelligence forecast…</strong></div> : selected ? <><div className="forecast-select-row"><select value={selected.host.id} onChange={(e) => setSelectedHost(e.target.value)}>{data.map((x) => <option key={x.host.id} value={x.host.id}>{x.host.name}</option>)}</select><span>Forecast window: {selected.forecast.forecastStart ? new Date(selected.forecast.forecastStart).toLocaleString() : '—'} → {selected.forecast.forecastEnd ? new Date(selected.forecast.forecastEnd).toLocaleString() : '—'}</span><StatusBadge value={selected.forecast.source === 'Dynatrace Intelligence' ? 'Healthy' : 'Increasing Risk'}/></div><LineChart values={selected.forecast.historical} forecast={selected.forecast.forecast} upper={selected.forecast.upperBound} threshold={80}/><div className="forecast-facts"><div><small>Current</small><strong>{Math.round(selected.forecast.historical.at(-1) ?? 0)}%</strong></div><div><small>Forecast peak</small><strong>{Math.round(Math.max(...selected.forecast.forecast, 0))}%</strong></div><div><small>Upper bound</small><strong>{Math.round(Math.max(...selected.forecast.upperBound, 0))}%</strong></div><div><small>Forecast end</small><strong>{selected.forecast.forecastEnd ? new Date(selected.forecast.forecastEnd).toLocaleDateString() : '—'}</strong></div></div></> : <div className="empty-state"><Server size={24}/><strong>No forecast result available</strong></div>}</section><section className="panel table-panel"><div className="panel-heading"><div><span className="eyebrow">Dynatrace Intelligence results</span><h2>Hosts forecast to require attention</h2></div></div><div className="table-scroll"><table><thead><tr><th>Host</th><th>Current</th><th>Forecast peak</th><th>Upper bound</th><th>Quality</th><th>Source</th></tr></thead><tbody>{risky.slice(0, 25).map(({ host, forecast }) => <tr key={host.id} onClick={() => setSelectedHost(host.id)}><td><strong className="host-link">{host.name}</strong></td><td>{Math.round(forecast.historical.at(-1) ?? 0)}%</td><td>{Math.round(Math.max(...forecast.forecast, 0))}%</td><td>{Math.round(Math.max(...forecast.upperBound, 0))}%</td><td>{forecast.quality}</td><td>{forecast.source}</td></tr>)}</tbody></table></div></section></div>;
+}
+
+function Simulation({ hosts }: { hosts: Host[] }) {
+  const [traffic, setTraffic] = useState(20); const [additional, setAdditional] = useState(0);
+  const currentThroughput = averageThroughput(hosts); const simulatedThroughput = Math.round(currentThroughput * (1 + traffic / 100)); const delta = simulatedThroughput - currentThroughput;
+  const result = runCapacitySimulation({ cpuCapacity: Math.max(1, average(hosts, 'cpu')), memoryCapacity: Math.max(1, average(hosts, 'memory')), diskCapacity: Math.max(1, average(hosts, 'disk')), trafficGrowth: traffic, transactionGrowth: traffic, period: 30 as ForecastHorizon, additionalHosts: additional, cpuPerHost: 25, memoryPerHost: 25, diskPerHost: 20 });
+  const insight = getBusinessInsights(hosts);
+  return <div className="content"><PageTitle eyebrow="What-if planning" title="Capacity simulation"><div className="forecast-horizon-chip"><Zap size={14}/> Current traffic is a live Dynatrace service-throughput baseline</div></PageTitle><section className="metric-strip"><MetricCard label="Current traffic" value={`${currentThroughput} req/min`} detail="Live application-service throughput" icon={<Zap/>} tone="green"/><MetricCard label="Simulated traffic" value={`${simulatedThroughput} req/min`} detail={`+${traffic}% vs current`} icon={<BarChart3/>}/><MetricCard label="Traffic delta" value={`+${delta} req/min`} detail="Additional request load" icon={<Activity/>} tone="amber"/></section><section className="panel simulation-grid"><div><label>Traffic growth <strong>{traffic}%</strong></label><input type="range" min="0" max="200" value={traffic} onChange={(e) => setTraffic(Number(e.target.value))}/><label>Additional hosts <strong>{additional}</strong></label><input type="range" min="0" max="20" value={additional} onChange={(e) => setAdditional(Number(e.target.value))}/><div className="simulation-traffic-note">Baseline {currentThroughput} req/min → {simulatedThroughput} req/min</div></div><div className="simulation-result"><span className="eyebrow">Projected capacity</span><strong>{result.recommendedExpansion} additional hosts</strong><p>{result.risk} risk · capacity gap {result.capacityGap}</p><small>{insight.summary}</small></div></section></div>;
+}

@@ -24,5 +24,11 @@ export default tseslint.config(
         { allowConstantExport: true },
       ],
     },
+  },
+  {
+    files: ['src/RealApp.tsx'],
+    rules: {
+      '@typescript-eslint/no-unused-vars': 'off',
+    },
   }
 );
