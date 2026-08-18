@@ -1,125 +1,21 @@
-function parseReqPerMin(card: HTMLElement, label: string): number | undefined {
-  const text = card.innerText.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
-  const match = text.match(new RegExp(`${label}[^0-9]*([0-9]+(?:\\.[0-9]+)?)\\s*req/min`, 'i'));
-  if (!match) return undefined;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : undefined;
-}
+import { queryExecutionClient } from '@dynatrace-sdk/client-query';
 
-function setChartLabels() {
-  const panel = document.querySelector<HTMLElement>('.chart-panel');
-  if (!panel) return;
-  const title = panel.querySelector('h2')?.textContent?.trim() ?? '';
-  const row = panel.querySelector('.chart-title-row');
-  if (!row) return;
-  let label = 'Metric';
-  let unit = 'value';
-  if (/throughput/i.test(title)) { label = 'Application throughput'; unit = 'req/min'; }
-  else if (/cpu/i.test(title)) { label = 'CPU utilization'; unit = '%'; }
-  else if (/memory/i.test(title)) { label = 'Memory utilization'; unit = '%'; }
-  else if (/disk/i.test(title)) { label = 'Disk utilization'; unit = '%'; }
-  else if (/network rx/i.test(title)) { label = 'Network receive rate'; unit = 'bytes/s'; }
-  else if (/network tx/i.test(title)) { label = 'Network transmit rate'; unit = 'bytes/s'; }
-  row.querySelector('strong')?.replaceChildren(document.createTextNode(`${label} (${unit})`));
-  row.querySelector('span')?.replaceChildren(document.createTextNode(`Unit: ${unit} · X-axis: Selected time window`));
-}
-
-function addSimulationChart() {
-  const panel = document.querySelector<HTMLElement>('.simulation-enhanced');
-  if (!panel) return;
-  const cards = [...panel.querySelectorAll<HTMLElement>('.metric-card')];
-  if (cards.length < 2) return;
-
-  const current = cards.map((card) => parseReqPerMin(card, 'Current traffic')).find((value) => value !== undefined);
-  const simulated = cards.map((card) => parseReqPerMin(card, 'Simulated traffic')).find((value) => value !== undefined);
-  if (current === undefined || simulated === undefined) return;
-
-  const signature = `${current.toFixed(3)}|${simulated.toFixed(3)}`;
-  let chart = panel.querySelector<HTMLElement>('.simulation-scenario-chart');
-  if (chart?.dataset.signature === signature) return;
-  chart?.remove();
-
-  const max = Math.max(1, current, simulated);
-  const top = 42;
-  const bottom = 218;
-  const left = 82;
-  const right = 775;
-  const y = (value: number) => bottom - (value / max) * (bottom - top);
-  const startY = y(current);
-  const endY = y(simulated);
-  const quarter = (fraction: number) => startY + (endY - startY) * fraction;
-
-  chart = document.createElement('section');
-  chart.className = 'simulation-scenario-chart chart-wrap labeled-chart';
-  chart.dataset.signature = signature;
-  chart.innerHTML = `
-    <div class="chart-title-row"><strong>Traffic simulation trajectory</strong><span>Unit: req/min · X-axis: Simulation horizon</span></div>
-    <svg viewBox="0 0 860 300" role="img" aria-label="Current traffic compared with simulated traffic">
-      <line x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" class="chart-grid"/>
-      <line x1="${left}" x2="${right}" y1="${(top + bottom) / 2}" y2="${(top + bottom) / 2}" class="chart-grid"/>
-      <line x1="${left}" x2="${right}" y1="${top}" y2="${top}" class="chart-grid"/>
-      <text x="38" y="${bottom + 4}" class="chart-axis-label">0</text>
-      <text x="18" y="${(top + bottom) / 2 + 4}" class="chart-axis-label">${Math.round(max / 2)}</text>
-      <text x="8" y="${top + 4}" class="chart-axis-label">${Math.round(max)}</text>
-      <polyline points="${left},${startY} ${right},${startY}" class="scenario-line actual"/>
-      <polyline points="${left},${startY} ${left + 173},${quarter(.25)} ${left + 346},${quarter(.5)} ${left + 519},${quarter(.75)} ${right},${endY}" class="scenario-line forecast"/>
-      <circle cx="${left}" cy="${startY}" r="5" class="scenario-dot actual"/>
-      <circle cx="${right}" cy="${endY}" r="6" class="scenario-dot forecast"/>
-      <text x="${left - 6}" y="252" class="chart-axis-label">Now</text>
-      <text x="${left + 300}" y="252" class="chart-axis-label">Mid-scenario</text>
-      <text x="${right - 38}" y="252" class="chart-axis-label">Horizon</text>
-      <text x="366" y="280" class="chart-axis-title">Simulation horizon</text>
-      <text x="${left + 8}" y="${Math.max(28, startY - 10)}" class="scenario-start-label">${current.toFixed(1)} req/min</text>
-      <text x="${right - 96}" y="${Math.max(28, endY - 10)}" class="scenario-end-label">${simulated.toFixed(1)} req/min</text>
-    </svg>
-    <div class="chart-legend"><span><i class="legend-dot actual-dot"/>Current traffic baseline</span><span><i class="legend-dot forecast-dot"/>Simulated traffic</span></div>
-    <div class="chart-insights"><div><small>Current baseline</small><strong>${current.toFixed(1)} req/min</strong></div><div><small>Simulated endpoint</small><strong>${simulated.toFixed(1)} req/min</strong></div><div><small>Traffic delta</small><strong>+${Math.max(0, simulated - current).toFixed(1)} req/min</strong></div><div><small>Scenario assumption</small><strong>Linear ramp</strong></div></div>`;
-
-  const kpis = panel.querySelector('.simulation-kpis');
-  const result = panel.querySelector('.simulation-result');
-  if (kpis) kpis.after(chart);
-  else if (result) result.after(chart);
-  else panel.appendChild(chart);
-}
-
-function enhanceForecastSummary() {
-  const panel = document.querySelector<HTMLElement>('.forecast-panel');
-  if (!panel) return;
-  const chart = panel.querySelector('.chart-wrap');
-  if (!chart) return;
-  let section = panel.querySelector<HTMLElement>('.forecast-interpretation');
-  if (!section) {
-    section = document.createElement('section');
-    section.className = 'forecast-interpretation';
-    panel.appendChild(section);
-  }
-  const hasForecast = Boolean(panel.querySelector('.chart-line.forecast'));
-  const hasBand = Boolean(panel.querySelector('.forecast-band'));
-  section.innerHTML = `<div class="forecast-interpretation-title">How to read this forecast</div><div class="forecast-interpretation-grid"><div><small>Forecast status</small><strong>${hasForecast ? 'Dynatrace forecast plotted' : 'No usable forecast points'}</strong></div><div><small>Prediction interval</small><strong>${hasBand ? '90%' : 'Unavailable'}</strong></div></div><p>${hasForecast ? 'Blue = observed telemetry. Orange = Dynatrace Intelligence forecast. Gold = 90% prediction interval. Red = capacity threshold.' : 'Dynatrace Intelligence did not return usable forecast points for this run. No trend is fabricated.'}</p>`;
-}
-
-export function installUiEnhancements() {
-  const state = window as Window & { __axisEnhancementsInstalled?: boolean };
-  if (state.__axisEnhancementsInstalled) return;
-  state.__axisEnhancementsInstalled = true;
-
-  const refresh = () => {
-    setChartLabels();
-    const active = document.querySelector('.nav-item.active')?.textContent?.trim() ?? '';
-    if (active.includes('Simulation')) addSimulationChart();
-    if (active.includes('Capacity Forecast')) enhanceForecastSummary();
-  };
-
-  document.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target.closest('.nav-item') : null;
-    if (target) window.setTimeout(refresh, 120);
-  });
-  document.addEventListener('input', (event) => {
-    if (event.target instanceof HTMLInputElement && event.target.closest('.simulation-enhanced')) window.setTimeout(addSimulationChart, 60);
-  });
-  document.addEventListener('change', (event) => {
-    if (event.target instanceof HTMLInputElement && event.target.closest('.simulation-enhanced')) window.setTimeout(addSimulationChart, 60);
-  });
-
-  window.setTimeout(refresh, 500);
-}
+type SeriesRecord = Record<string, unknown>;
+const numberFrom = (value: string) => { const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/); return match ? Number(match[0]) : 0; };
+const finite = (values: unknown): number[] => Array.isArray(values) ? values.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [];
+async function dql(query: string): Promise<SeriesRecord[]> { const response = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: 2000 } }); let result = response.result as { records?: Array<SeriesRecord | null> } | undefined; let token = response.requestToken; let state = response.state; for (let attempt = 0; !result && token && attempt < 12; attempt += 1) { const polled = await queryExecutionClient.queryPoll({ requestToken: token, requestTimeoutMilliseconds: 30000 }); state = polled.state; result = polled.result as { records?: Array<SeriesRecord | null> } | undefined; if (!result && state === 'RUNNING') await new Promise((resolve) => setTimeout(resolve, 300)); } if (!result) throw new Error(`Simulation telemetry query did not complete (state: ${state}).`); return (result.records ?? []).filter(Boolean) as SeriesRecord[]; }
+function selectedZone(): string { const selectors = [...document.querySelectorAll<HTMLSelectElement>('select')]; const selector = selectors.find((select) => select.previousElementSibling?.textContent?.toLowerCase().includes('management zone')); return selector?.value || 'All Management Zones'; }
+function escapeDql(value: string) { return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+function parseReqPerMin(card: HTMLElement, label: string): number | undefined { const text = card.innerText.replace(/,/g, ' ').replace(/\s+/g, ' ').trim(); const match = text.match(new RegExp(`${label}[^0-9]*([0-9]+(?:\\.[0-9]+)?)\\s*req/min`, 'i')); if (!match) return undefined; const value = Number(match[1]); return Number.isFinite(value) ? value : undefined; }
+function setChartLabels() { document.querySelectorAll<HTMLElement>('.chart-panel').forEach((panel) => { const title = panel.querySelector('h2')?.textContent?.trim() ?? ''; const row = panel.querySelector('.chart-title-row'); if (!row) return; let label = 'Metric'; let unit = 'value'; if (/throughput/i.test(title)) { label = 'Application throughput'; unit = 'req/min'; } else if (/cpu/i.test(title)) { label = 'CPU utilization'; unit = '%'; } else if (/memory/i.test(title)) { label = 'Memory utilization'; unit = '%'; } else if (/disk/i.test(title)) { label = 'Disk utilization'; unit = '%'; } else if (/network rx/i.test(title)) { label = 'Network receive rate'; unit = 'bytes/s'; } else if (/network tx/i.test(title)) { label = 'Network transmit rate'; unit = 'bytes/s'; } row.querySelector('strong')?.replaceChildren(document.createTextNode(`${label} (${unit})`)); row.querySelector('span')?.replaceChildren(document.createTextNode(`Unit: ${unit} · Hover a point for value and bucket time`)); }); }
+function parseSvgPoints(svg: SVGSVGElement) { return [...svg.querySelectorAll<SVGPolylineElement>('polyline')].flatMap((line) => { const classes = line.getAttribute('class') ?? ''; return (line.getAttribute('points') ?? '').trim().split(/\s+/).map((pair) => pair.split(',').map(Number)).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y)).map(([x, y]) => ({ x, y, classes })); }); }
+function inferWindowMs(): number { const value = [...document.querySelectorAll<HTMLSelectElement>('select')].find((select) => select.previousElementSibling?.textContent?.toLowerCase().includes('current data'))?.value ?? 'Last 24 hours'; if (/1 hour/i.test(value)) return 3600e3; if (/6 hours/i.test(value)) return 6 * 3600e3; if (/7 days/i.test(value)) return 7 * 86400e3; if (/30 days/i.test(value)) return 30 * 86400e3; return 24 * 3600e3; }
+function installChartHover() { document.querySelectorAll<SVGSVGElement>('.chart-wrap svg').forEach((svg) => { const host = svg.parentElement; if (!host || host.querySelector('.chart-hover-tooltip')) return; host.classList.add('interactive-chart'); const tooltip = document.createElement('div'); tooltip.className = 'chart-hover-tooltip'; tooltip.style.display = 'none'; host.appendChild(tooltip); const points = parseSvgPoints(svg); const view = svg.viewBox.baseVal; const onMove = (event: MouseEvent) => { if (!points.length) return; const rect = svg.getBoundingClientRect(); const x = (event.clientX - rect.left) / Math.max(1, rect.width) * view.width; const nearest = points.reduce((best, point) => Math.abs(point.x - x) < Math.abs(best.x - x) ? point : best, points[0]); const rangeText = [...document.querySelectorAll('.forecast-select-row span')].find((node) => node.textContent?.includes('→'))?.textContent ?? ''; const parsed = rangeText.split('→').map((value) => new Date(value.trim()).getTime()).filter(Number.isFinite); const end = parsed.length === 2 ? parsed[1] : Date.now(); const start = parsed.length === 2 ? parsed[0] : end - inferWindowMs(); const fraction = Math.max(0, Math.min(1, nearest.x / Math.max(1, view.width))); const date = new Date(start + (end - start) * fraction); const labels = [...svg.querySelectorAll<SVGTextElement>('.chart-axis-label')].map((node) => node.textContent?.trim() ?? '').filter((text) => /^-?[0-9]/.test(text)); const numeric = labels.map((label) => Number(label.replace(/[^0-9.-]/g, ''))).filter(Number.isFinite); const top = 28, bottom = view.height - 68; const ratio = Math.max(0, Math.min(1, (nearest.y - top) / Math.max(1, bottom - top))); const high = numeric[0] ?? 100, low = numeric.at(-1) ?? 0; const value = high - (high - low) * ratio; const title = host.querySelector('.chart-title-row strong')?.textContent?.trim() ?? 'Metric'; const unit = host.querySelector('.chart-title-row span')?.textContent?.match(/Unit:\s*([^·]+)/)?.[1]?.trim() ?? ''; const series = /forecast/i.test(nearest.classes) ? 'Dynatrace forecast' : 'Historical'; tooltip.innerHTML = `<strong>${title}</strong><span>${date.toLocaleString()}</span><b>${value.toFixed(value >= 100 ? 0 : 2)}${unit && unit !== 'value' ? ` ${unit}` : ''}</b><small>${series} · bucket time derived from the selected timeframe</small>`; tooltip.style.display = 'block'; tooltip.style.left = `${Math.min(host.clientWidth - tooltip.offsetWidth - 12, Math.max(12, event.clientX - rect.left + 14))}px`; tooltip.style.top = `${Math.max(8, event.clientY - rect.top - tooltip.offsetHeight - 10)}px`; }; svg.addEventListener('mousemove', onMove); svg.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; }); }); }
+function addSimulationChart() { const panel = document.querySelector<HTMLElement>('.simulation-enhanced'); if (!panel) return; const cards = [...panel.querySelectorAll<HTMLElement>('.metric-card')]; const current = cards.map((card) => parseReqPerMin(card, 'Current traffic')).find((value) => value !== undefined); const simulated = cards.map((card) => parseReqPerMin(card, 'Simulated traffic')).find((value) => value !== undefined); if (current === undefined || simulated === undefined) return; const signature = `${current.toFixed(3)}|${simulated.toFixed(3)}`; let chart = panel.querySelector<HTMLElement>('.simulation-scenario-chart'); if (chart?.dataset.signature === signature) return; chart?.remove(); const max = Math.max(1, current, simulated), top = 42, bottom = 218, left = 82, right = 775; const y = (value: number) => bottom - (value / max) * (bottom - top); const startY = y(current), endY = y(simulated); chart = document.createElement('section'); chart.className = 'simulation-scenario-chart chart-wrap labeled-chart'; chart.dataset.signature = signature; chart.innerHTML = `<div class="chart-title-row"><strong>Traffic simulation trajectory</strong><span>Unit: req/min · Hover for scenario values</span></div><svg viewBox="0 0 860 300" role="img" aria-label="Current traffic compared with simulated traffic"><line x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" class="chart-grid"/><line x1="${left}" x2="${right}" y1="${(top + bottom) / 2}" y2="${(top + bottom) / 2}" class="chart-grid"/><line x1="${left}" x2="${right}" y1="${top}" y2="${top}" class="chart-grid"/><text x="38" y="${bottom + 4}" class="chart-axis-label">0</text><text x="18" y="${(top + bottom) / 2 + 4}" class="chart-axis-label">${Math.round(max / 2)}</text><text x="8" y="${top + 4}" class="chart-axis-label">${Math.round(max)}</text><polyline points="${left},${startY} ${right},${startY}" class="scenario-line actual"/><polyline points="${left},${startY} ${left + 173},${startY + (endY - startY) * .25} ${left + 346},${startY + (endY - startY) * .5} ${left + 519},${startY + (endY - startY) * .75} ${right},${endY}" class="scenario-line forecast"/><circle cx="${left}" cy="${startY}" r="5" class="scenario-dot actual"/><circle cx="${right}" cy="${endY}" r="6" class="scenario-dot forecast"/><text x="${left - 6}" y="252" class="chart-axis-label">Now</text><text x="${left + 300}" y="252" class="chart-axis-label">Mid-scenario</text><text x="${right - 38}" y="252" class="chart-axis-label">Horizon</text><text x="366" y="280" class="chart-axis-title">Simulation horizon</text><text x="${left + 8}" y="${Math.max(28, startY - 10)}" class="scenario-start-label">${current.toFixed(1)} req/min</text><text x="${right - 96}" y="${Math.max(28, endY - 10)}" class="scenario-end-label">${simulated.toFixed(1)} req/min</text></svg><div class="chart-legend"><span><i class="legend-dot actual-dot"/>Current traffic baseline</span><span><i class="legend-dot forecast-dot"/>Simulated traffic</span></div><div class="chart-insights"><div><small>Current baseline</small><strong>${current.toFixed(1)} req/min</strong></div><div><small>Simulated endpoint</small><strong>${simulated.toFixed(1)} req/min</strong></div><div><small>Traffic delta</small><strong>${simulated >= current ? '+' : ''}${(simulated - current).toFixed(1)} req/min</strong></div><div><small>Scenario assumption</small><strong>Linear ramp</strong></div></div>`; const kpis = panel.querySelector('.simulation-kpis'); if (kpis) kpis.after(chart); else panel.appendChild(chart); }
+function fit(xs: number[], ys: number[]) { const pairs = xs.map((x, i) => [x, ys[i]] as const).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y)); if (pairs.length < 6) return { r2: 0, slope: 0, intercept: ys.at(-1) ?? 0 }; const mx = pairs.reduce((s, [x]) => s + x, 0) / pairs.length; const my = pairs.reduce((s, [, y]) => s + y, 0) / pairs.length; const den = pairs.reduce((s, [x]) => s + (x - mx) ** 2, 0); const slope = den ? pairs.reduce((s, [x, y]) => s + (x - mx) * (y - my), 0) / den : 0; const intercept = my - slope * mx; const total = pairs.reduce((s, [, y]) => s + (y - my) ** 2, 0); const residual = pairs.reduce((s, [x, y]) => s + (y - (intercept + slope * x)) ** 2, 0); return { r2: total ? Math.max(0, 1 - residual / total) : 0, slope, intercept }; }
+function renderResourceProjection(data: { cpu: number[]; memory: number[]; disk: number[]; days: number[]; r2: { cpu: number; memory: number; disk: number }; horizon: number; growth: number }) { const panel = document.querySelector<HTMLElement>('.simulation-enhanced'); if (!panel) return; panel.querySelector('.traffic-resource-projection')?.remove(); const section = document.createElement('section'); section.className = 'traffic-resource-projection'; const chart = (title: string, values: number[], r2: number) => { const width = 840, height = 250, left = 72, right = 20, top = 28, bottom = 52; const y = (v: number) => top + (height - top - bottom) - (v / 100) * (height - top - bottom); const point = (v: number, i: number) => `${left + i * (width-left-right) / Math.max(1, values.length-1)},${y(v)}`; const points = values.map(point).join(' '); return `<div class="projection-card"><div class="chart-title-row"><strong>${title} — traffic-driven capacity outlook</strong><span>Unit: % · Checkpoints: 30d / 60d / 90d</span></div><svg viewBox="0 0 ${width} ${height}" class="projection-svg"><line x1="${left}" x2="${width-right}" y1="${y(80)}" y2="${y(80)}" class="threshold-line"/><text x="${width-172}" y="${y(80)-7}" class="threshold-label">80% capacity threshold</text>${[0,25,50,75,100].map((tick) => `<line x1="${left}" x2="${width-right}" y1="${y(tick)}" y2="${y(tick)}" class="chart-grid"/><text x="12" y="${y(tick)+4}" class="chart-axis-label">${tick}%</text>`).join('')}<polyline points="${points}" class="projection-line"/>${[30,60,90].map((day) => { const idx = data.days.findIndex((value) => value === day); const i = idx >= 0 ? idx : data.days.length - 1; const value = values[i]; const x = left + i * (width-left-right) / Math.max(1, values.length-1); return `<circle cx="${x}" cy="${y(value)}" r="5" class="projection-point" data-day="${day}" data-value="${value.toFixed(1)}"/><text x="${x-10}" y="${y(value)-10}" class="projection-label">${value.toFixed(1)}%</text>`; }).join('')}<text x="${left}" y="${height-22}" class="chart-axis-label">Now</text><text x="${left + (width-left-right)*.333}" y="${height-22}" class="chart-axis-label">30d</text><text x="${left + (width-left-right)*.666}" y="${height-22}" class="chart-axis-label">60d</text><text x="${width-right-20}" y="${height-22}" class="chart-axis-label">90d</text><text x="${width/2-46}" y="${height-5}" class="chart-axis-title">Days from now</text></svg><div class="projection-meta"><span>R²: <strong>${r2.toFixed(2)}</strong></span><span>${r2 >= 0.7 ? 'High confidence' : r2 >= 0.4 ? 'Moderate confidence' : 'Low confidence — weak traffic correlation'}</span></div></div>`; };
+  section.innerHTML = `<div class="projection-header"><span class="eyebrow">Resource capacity outlook</span><h2>CPU, memory and disk impact of traffic growth</h2><p>Uses the observed 30-day relationship between verified application throughput and resource utilization. This is a transparent traffic-driven scenario model; Dynatrace Intelligence forecasts remain separate.</p></div>${chart('CPU', data.cpu, data.r2.cpu)}${chart('Memory', data.memory, data.r2.memory)}${chart('Disk', data.disk, data.r2.disk)}<div class="projection-footnote">The scenario ramps traffic from the verified baseline to the selected growth. 30d / 60d / 90d checkpoints are shown. When correlation is weak, the result is labelled low confidence instead of being presented as a guaranteed forecast.</div>`; panel.appendChild(section); section.querySelectorAll<SVGCircleElement>('.projection-point').forEach((point) => { const tooltip = document.createElement('div'); tooltip.className = 'chart-hover-tooltip'; tooltip.style.display = 'none'; section.appendChild(tooltip); point.addEventListener('mouseenter', () => { tooltip.innerHTML = `<strong>${point.closest('.projection-card')?.querySelector('.chart-title-row strong')?.textContent ?? 'Resource'}</strong><span>${point.dataset.day} days from now</span><b>${point.dataset.value}%</b>`; tooltip.style.display = 'block'; }); point.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; }); }); }
+async function loadResourceProjection() { const panel = document.querySelector<HTMLElement>('.simulation-enhanced'); if (!panel || panel.dataset.projectionLoaded === '1') return; const cards = [...panel.querySelectorAll<HTMLElement>('.metric-card')]; const current = cards.map((card) => parseReqPerMin(card, 'Current traffic')).find((value) => value !== undefined); const simulated = cards.map((card) => parseReqPerMin(card, 'Simulated traffic')).find((value) => value !== undefined); if (current === undefined) return; const growth = numberFrom(panel.querySelector('.simulation-controls label strong')?.textContent ?? '20'); const horizon = Number([...document.querySelectorAll<HTMLSelectElement>('select')].find((select) => select.previousElementSibling?.textContent?.toLowerCase().includes('forecast'))?.value ?? '30') || 30; try { const zone = selectedZone(); const zoneFilter = zone !== 'All Management Zones' ? `| expand managementZones | filter managementZones == "${escapeDql(zone)}"` : ''; const hosts = await dql(`fetch dt.entity.host ${zoneFilter} | fields id | dedup id`); const ids = hosts.map((row) => String(row.id ?? '')).filter(Boolean); if (!ids.length) return; const hostList = ids.map((id) => `"${escapeDql(id)}"`).join(', '); const resources = await dql(`timeseries cpu=avg(dt.host.cpu.usage), memory=avg(dt.host.memory.usage), disk=avg(dt.host.disk.used.percent), by:{dt.entity.host}, interval:1h, from:-30d, to:now() | filter in(dt.entity.host, ${hostList}) | fields dt.entity.host, cpu, memory, disk`); const traffic = await dql(`fetch spans, from:now()-30d, to:now() | filter request.is_root_span == true | filter isNotNull(dt.entity.host) | filter in(dt.entity.host, ${hostList}) | makeTimeseries requests=count(), by:{dt.entity.host}, interval:1h | fields dt.entity.host, requests`); const hostTraffic = new Map<string, number[]>(); traffic.forEach((row) => hostTraffic.set(String(row['dt.entity.host'] ?? ''), finite(row.requests).map((v) => v / 60))); const fitMetric = (key: 'cpu'|'memory'|'disk') => { const xs: number[] = [], ys: number[] = []; resources.forEach((row) => { const tr = hostTraffic.get(String(row['dt.entity.host'] ?? '')) ?? []; const rs = finite(row[key]); tr.forEach((x, i) => { if (Number.isFinite(rs[i])) { xs.push(x); ys.push(rs[i]); } }); }); return { fit: fit(xs, ys), currentResource: ys.at(-1) ?? 0 }; }; const cpu = fitMetric('cpu'), memory = fitMetric('memory'), disk = fitMetric('disk'); const targetTraffic = simulated ?? current * (1 + growth / 100); const trafficAt = (day: number) => current + (targetTraffic - current) * Math.min(day / Math.max(1, horizon), 1); const predict = (model: ReturnType<typeof fitMetric>, day: number) => Math.max(0, Math.min(100, model.fit.r2 >= 0.25 ? model.fit.slope * trafficAt(day) + model.fit.intercept : model.currentResource * (trafficAt(day) / Math.max(1, current)))); const days = Array.from({ length: 13 }, (_, index) => Math.round(index * 90 / 12)); renderResourceProjection({ cpu: days.map((day) => predict(cpu, day)), memory: days.map((day) => predict(memory, day)), disk: days.map((day) => predict(disk, day)), days, r2: { cpu: cpu.fit.r2, memory: memory.fit.r2, disk: disk.fit.r2 }, horizon, growth }); panel.dataset.projectionLoaded = '1'; } catch (error) { const note = document.createElement('div'); note.className = 'notice'; note.textContent = `Traffic-driven resource projection unavailable: ${error instanceof Error ? error.message : String(error)}`; panel.appendChild(note); } }
+function refresh() { setChartLabels(); const active = document.querySelector('.nav-item.active')?.textContent?.trim() ?? ''; if (active.includes('Simulation')) { addSimulationChart(); void loadResourceProjection(); } if (active.includes('Capacity Forecast')) enhanceForecastSummary(); installChartHover(); }
+function enhanceForecastSummary() { const panel = document.querySelector<HTMLElement>('.forecast-panel'); if (!panel) return; const chart = panel.querySelector('.chart-wrap'); if (!chart) return; let section = panel.querySelector<HTMLElement>('.forecast-interpretation'); if (!section) { section = document.createElement('section'); section.className = 'forecast-interpretation'; panel.appendChild(section); } const hasForecast = Boolean(panel.querySelector('.chart-line.forecast')); const hasBand = Boolean(panel.querySelector('.forecast-band')); section.innerHTML = `<div class="forecast-interpretation-title">How to read this forecast</div><div class="forecast-interpretation-grid"><div><small>Forecast status</small><strong>${hasForecast ? 'Dynatrace forecast plotted' : 'No usable forecast points'}</strong></div><div><small>Prediction interval</small><strong>${hasBand ? '90%' : 'Unavailable'}</strong></div></div><p>${hasForecast ? 'Blue = observed telemetry. Orange = Dynatrace Intelligence forecast. Gold = 90% prediction interval. Red = capacity threshold.' : 'Dynatrace Intelligence did not return usable forecast points for this run. No trend is fabricated.'}</p>`; }
+export function installUiEnhancements() { const state = window as Window & { __axisEnhancementsInstalled?: boolean }; if (state.__axisEnhancementsInstalled) return; state.__axisEnhancementsInstalled = true; document.addEventListener('click', (event) => { const target = event.target instanceof Element ? event.target.closest('.nav-item') : null; if (target) window.setTimeout(refresh, 180); }); document.addEventListener('input', (event) => { if (event.target instanceof HTMLInputElement && event.target.closest('.simulation-enhanced')) { window.setTimeout(() => { addSimulationChart(); const panel = document.querySelector<HTMLElement>('.simulation-enhanced'); if (panel) delete panel.dataset.projectionLoaded; void loadResourceProjection(); }, 80); } }); document.addEventListener('change', (event) => { if (event.target instanceof HTMLInputElement && event.target.closest('.simulation-enhanced')) { window.setTimeout(() => { addSimulationChart(); const panel = document.querySelector<HTMLElement>('.simulation-enhanced'); if (panel) delete panel.dataset.projectionLoaded; void loadResourceProjection(); }, 80); } }); window.setTimeout(refresh, 500); }
