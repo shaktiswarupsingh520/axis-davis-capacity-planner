@@ -4,6 +4,7 @@ import EnhancedApp from './EnhancedApp';
 import './index.css';
 import './realApp.css';
 import './enhanced.css';
+import './branding.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
