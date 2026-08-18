@@ -1,11 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import RealAppV2 from './RealAppV2';
+import EnhancedApp from './EnhancedApp';
 import './index.css';
 import './realApp.css';
+import './enhanced.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RealAppV2 />
+    <EnhancedApp />
   </StrictMode>
 );
