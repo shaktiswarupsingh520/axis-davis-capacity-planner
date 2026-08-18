@@ -2,7 +2,7 @@
   "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.24",
+    "version": "1.0.25",
     "description": "Axis infrastructure capacity planning and forecasting.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
@@ -15,10 +15,6 @@
       { "name": "davis-copilot:conversations:execute", "comment": "Generate AI-assisted capacity summaries using Dynatrace Assist" }
     ]
   },
-  "build": {
-    "sourceRoot": "src"
-  },
-  "server": {
-    "port": 3001
-  }
+  "build": { "sourceRoot": "src" },
+  "server": { "port": 3001 }
 }
