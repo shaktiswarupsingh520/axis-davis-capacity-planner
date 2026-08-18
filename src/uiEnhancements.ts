@@ -1,6 +1,120 @@
-type SnapshotMetric={label:string;value:number};
-const numericFromText=(value:string)=>{const match=value.replace(/,/g,'').match(/-?\d+(?:\.\d+)?/);return match?Number(match[0]):0;};
-function enhanceTrendLabels(){const panel=document.querySelector<HTMLElement>('.chart-panel');if(!panel)return;const title=panel.querySelector('h2')?.textContent?.trim()||'';const row=panel.querySelector('.chart-title-row');if(!row)return;const strong=row.querySelector('strong');const span=row.querySelector('span');let unit='value';let label='Metric';if(/throughput/i.test(title)){unit='req/min';label='Application throughput';}else if(/cpu/i.test(title)){unit='%';label='CPU utilization';}else if(/memory/i.test(title)){unit='%';label='Memory utilization';}else if(/disk/i.test(title)){unit='%';label='Disk utilization';}else if(/network rx/i.test(title)){unit='bytes/s';label='Network receive rate';}else if(/network tx/i.test(title)){unit='bytes/s';label='Network transmit rate';}if(strong)strong.textContent=`${label} (${unit})`;if(span)span.textContent=`Unit: ${unit} · X-axis: Selected time window`;panel.querySelectorAll<SVGTextElement>('.chart-axis-label').forEach(node=>{const text=node.textContent?.trim()||'';if(text==='Start')node.textContent='Window start';if(text==='Now')node.textContent='Latest';});}
-function enhanceSimulation(){const panel=document.querySelector<HTMLElement>('.simulation-enhanced');if(!panel)return;const cards=[...panel.querySelectorAll<HTMLElement>('.metric-card')];const values:SnapshotMetric[]=cards.slice(0,3).map(card=>({label:card.querySelector('span')?.textContent?.trim()||'Traffic',value:numericFromText(card.querySelector('strong')?.textContent||card.textContent||'0')}));const current=values.find(item=>item.label.toLowerCase().includes('current'))?.value??0;const simulated=values.find(item=>item.label.toLowerCase().includes('simulated'))?.value??0;const signature=`${current}|${simulated}`;let chart=panel.querySelector<HTMLElement>('.simulation-scenario-chart');if(chart?.dataset.signature===signature)return;chart?.remove();const max=Math.max(1,current,simulated);const currentY=205-(current/max)*145;const simulatedY=205-(simulated/max)*145;const pts=[0,.25,.5,.75,1].map(f=>`${76+f*704},${currentY+(simulatedY-currentY)*f}`).join(' ');chart=document.createElement('section');chart.className='simulation-scenario-chart chart-wrap';chart.dataset.signature=signature;chart.innerHTML=`<div class="chart-title-row"><strong>Traffic simulation trajectory</strong><span>Unit: req/min · X-axis: Simulation horizon</span></div><svg viewBox="0 0 860 300" role="img" aria-label="Current traffic compared with simulated traffic"><line x1="76" x2="780" y1="205" y2="205" class="chart-grid"/><line x1="76" x2="780" y1="132.5" y2="132.5" class="chart-grid"/><line x1="76" x2="780" y1="60" y2="60" class="chart-grid"/><text x="35" y="209" class="chart-axis-label">0</text><text x="24" y="137" class="chart-axis-label">${Math.round(max*.5)}</text><text x="15" y="65" class="chart-axis-label">${Math.round(max)}</text><polyline points="76,${currentY} 252,${currentY} 428,${currentY} 604,${currentY} 780,${currentY}" class="scenario-line actual"/><polyline points="${pts}" class="scenario-line forecast"/><circle cx="76" cy="${currentY}" r="5" class="scenario-dot actual"/><circle cx="780" cy="${simulatedY}" r="6" class="scenario-dot forecast"/><text x="68" y="252" class="chart-axis-label">Now</text><text x="350" y="252" class="chart-axis-label">Mid-scenario</text><text x="742" y="252" class="chart-axis-label">Horizon</text><text x="370" y="280" class="chart-axis-title">Simulation horizon</text><text x="786" y="${simulatedY-10}" class="scenario-end-label">${simulated.toFixed(1)} req/min</text><text x="84" y="${currentY-10}" class="scenario-start-label">${current.toFixed(1)} req/min</text></svg><div class="chart-legend"><span><i class="legend-dot actual-dot"/>Current traffic baseline</span><span><i class="legend-dot forecast-dot"/>Simulated traffic</span></div><div class="chart-insights"><div><small>Current baseline</small><strong>${current.toFixed(1)} req/min</strong></div><div><small>Simulated endpoint</small><strong>${simulated.toFixed(1)} req/min</strong></div><div><small>Traffic delta</small><strong>+${Math.max(0,simulated-current).toFixed(1)} req/min</strong></div><div><small>Scenario assumption</small><strong>Linear ramp</strong></div></div>`;const result=panel.querySelector('.simulation-result');result?.after(chart)??panel.appendChild(chart);}
-function enhanceForecast(){const panel=document.querySelector<HTMLElement>('.forecast-panel');if(!panel)return;const chart=panel.querySelector('.chart-wrap');if(!chart)return;const existing=panel.querySelector<HTMLElement>('.forecast-interpretation');const insights=[...chart.querySelectorAll<HTMLElement>('.chart-insights > div')].map(node=>({label:node.querySelector('small')?.textContent?.trim()||'',value:node.querySelector('strong')?.textContent?.trim()||''}));const hasForecast=Boolean(panel.querySelector('.chart-line.forecast'));const hasBand=Boolean(panel.querySelector('.forecast-band'));const html=`<div class="forecast-interpretation-title">How to read this forecast</div><div class="forecast-interpretation-grid"><div><small>Forecast status</small><strong>${hasForecast?'Dynatrace forecast plotted':'No usable forecast points'}</strong></div><div><small>Prediction interval</small><strong>${hasBand?'90%':'Unavailable'}</strong></div>${insights.map(item=>`<div><small>${item.label}</small><strong>${item.value}</strong></div>`).join('')}</div><p>${hasForecast?'Blue = observed telemetry. Orange = Dynatrace Intelligence forecast. Gold = 90% prediction interval. Red = 80% capacity threshold. Use the upper prediction band—not only the point estimate—when planning capacity.':'Dynatrace Intelligence did not return usable forecast points for this run. The application intentionally does not invent a trend.'}</p>`;if(!existing){const node=document.createElement('section');node.className='forecast-interpretation';node.innerHTML=html;panel.appendChild(node);}else existing.innerHTML=html;}
-export function installUiEnhancements(){const state=window as Window&{__axisEnhancementsInstalled?:boolean};if(state.__axisEnhancementsInstalled)return;state.__axisEnhancementsInstalled=true;const refresh=()=>{enhanceTrendLabels();const active=document.querySelector('.nav-item.active')?.textContent?.trim()||'';if(active.includes('Simulation'))enhanceSimulation();if(active.includes('Capacity Forecast'))enhanceForecast();};const observer=new MutationObserver(refresh);observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});window.setInterval(refresh,600);window.setTimeout(refresh,800);}
+type SnapshotMetric = { label: string; value: number };
+
+const numberFrom = (value: string) => {
+  const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+};
+
+function setChartLabels() {
+  const panel = document.querySelector<HTMLElement>('.chart-panel');
+  if (!panel) return;
+  const title = panel.querySelector('h2')?.textContent?.trim() ?? '';
+  const row = panel.querySelector('.chart-title-row');
+  if (!row) return;
+  let label = 'Metric';
+  let unit = 'value';
+  if (/throughput/i.test(title)) { label = 'Application throughput'; unit = 'req/min'; }
+  else if (/cpu/i.test(title)) { label = 'CPU utilization'; unit = '%'; }
+  else if (/memory/i.test(title)) { label = 'Memory utilization'; unit = '%'; }
+  else if (/disk/i.test(title)) { label = 'Disk utilization'; unit = '%'; }
+  else if (/network rx/i.test(title)) { label = 'Network receive rate'; unit = 'bytes/s'; }
+  else if (/network tx/i.test(title)) { label = 'Network transmit rate'; unit = 'bytes/s'; }
+  const strong = row.querySelector('strong');
+  const span = row.querySelector('span');
+  if (strong) strong.textContent = `${label} (${unit})`;
+  if (span) span.textContent = `Unit: ${unit} · X-axis: Selected time window`;
+}
+
+function addSimulationChart() {
+  const panel = document.querySelector<HTMLElement>('.simulation-enhanced');
+  if (!panel) return;
+  const cards = [...panel.querySelectorAll<HTMLElement>('.metric-card')].slice(0, 3);
+  const values: SnapshotMetric[] = cards.map((card) => ({
+    label: card.querySelector('span')?.textContent?.trim() ?? 'Traffic',
+    value: numberFrom(card.querySelector('strong')?.textContent ?? card.textContent ?? '0'),
+  }));
+  const current = values.find((item) => /current/i.test(item.label))?.value ?? 0;
+  const simulated = values.find((item) => /simulated/i.test(item.label))?.value ?? 0;
+  const signature = `${current}|${simulated}`;
+  let chart = panel.querySelector<HTMLElement>('.simulation-scenario-chart');
+  if (chart?.dataset.signature === signature) return;
+  chart?.remove();
+  const max = Math.max(1, current, simulated);
+  const top = 40;
+  const bottom = 220;
+  const left = 76;
+  const right = 780;
+  const y = (value: number) => bottom - (value / max) * (bottom - top);
+  const startY = y(current);
+  const endY = y(simulated);
+  chart = document.createElement('section');
+  chart.className = 'simulation-scenario-chart chart-wrap labeled-chart';
+  chart.dataset.signature = signature;
+  chart.innerHTML = `
+    <div class="chart-title-row"><strong>Traffic simulation trajectory</strong><span>Unit: req/min · X-axis: Simulation horizon</span></div>
+    <svg viewBox="0 0 860 300" role="img" aria-label="Current traffic compared with simulated traffic">
+      <line x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" class="chart-grid"/>
+      <line x1="${left}" x2="${right}" y1="${(top + bottom) / 2}" y2="${(top + bottom) / 2}" class="chart-grid"/>
+      <line x1="${left}" x2="${right}" y1="${top}" y2="${top}" class="chart-grid"/>
+      <text x="35" y="${bottom + 4}" class="chart-axis-label">0</text>
+      <text x="18" y="${(top + bottom) / 2 + 4}" class="chart-axis-label">${Math.round(max / 2)}</text>
+      <text x="10" y="${top + 4}" class="chart-axis-label">${Math.round(max)}</text>
+      <polyline points="${left},${startY} ${right},${startY}" class="scenario-line actual"/>
+      <polyline points="${left},${startY} ${left + 176},${startY + (endY - startY) * .25} ${left + 352},${startY + (endY - startY) * .5} ${left + 528},${startY + (endY - startY) * .75} ${right},${endY}" class="scenario-line forecast"/>
+      <circle cx="${left}" cy="${startY}" r="5" class="scenario-dot actual"/>
+      <circle cx="${right}" cy="${endY}" r="6" class="scenario-dot forecast"/>
+      <text x="${left - 8}" y="252" class="chart-axis-label">Now</text>
+      <text x="${left + 310}" y="252" class="chart-axis-label">Mid-scenario</text>
+      <text x="${right - 40}" y="252" class="chart-axis-label">Horizon</text>
+      <text x="370" y="280" class="chart-axis-title">Simulation horizon</text>
+      <text x="${left + 8}" y="${startY - 10}" class="scenario-start-label">${current.toFixed(1)} req/min</text>
+      <text x="${right - 86}" y="${endY - 10}" class="scenario-end-label">${simulated.toFixed(1)} req/min</text>
+    </svg>
+    <div class="chart-legend"><span><i class="legend-dot actual-dot"/>Current traffic baseline</span><span><i class="legend-dot forecast-dot"/>Simulated traffic</span></div>
+    <div class="chart-insights"><div><small>Current baseline</small><strong>${current.toFixed(1)} req/min</strong></div><div><small>Simulated endpoint</small><strong>${simulated.toFixed(1)} req/min</strong></div><div><small>Traffic delta</small><strong>+${Math.max(0, simulated - current).toFixed(1)} req/min</strong></div><div><small>Scenario assumption</small><strong>Linear ramp</strong></div></div>`;
+  panel.querySelector('.simulation-result')?.after(chart) ?? panel.appendChild(chart);
+}
+
+function enhanceForecastSummary() {
+  const panel = document.querySelector<HTMLElement>('.forecast-panel');
+  if (!panel) return;
+  const chart = panel.querySelector('.chart-wrap');
+  if (!chart) return;
+  let section = panel.querySelector<HTMLElement>('.forecast-interpretation');
+  if (!section) {
+    section = document.createElement('section');
+    section.className = 'forecast-interpretation';
+    panel.appendChild(section);
+  }
+  const hasForecast = Boolean(panel.querySelector('.chart-line.forecast'));
+  const hasBand = Boolean(panel.querySelector('.forecast-band'));
+  section.innerHTML = `<div class="forecast-interpretation-title">How to read this forecast</div><div class="forecast-interpretation-grid"><div><small>Forecast status</small><strong>${hasForecast ? 'Dynatrace forecast plotted' : 'No usable forecast points'}</strong></div><div><small>Prediction interval</small><strong>${hasBand ? '90%' : 'Unavailable'}</strong></div></div><p>${hasForecast ? 'Blue = observed telemetry. Orange = Dynatrace Intelligence forecast. Gold = 90% prediction interval. Red = capacity threshold.' : 'Dynatrace Intelligence did not return usable forecast points for this run. No trend is fabricated.'}</p>`;
+}
+
+export function installUiEnhancements() {
+  const state = window as Window & { __axisEnhancementsInstalled?: boolean };
+  if (state.__axisEnhancementsInstalled) return;
+  state.__axisEnhancementsInstalled = true;
+  const refresh = () => {
+    setChartLabels();
+    const active = document.querySelector('.nav-item.active')?.textContent?.trim() ?? '';
+    if (active.includes('Simulation')) addSimulationChart();
+    if (active.includes('Capacity Forecast')) enhanceForecastSummary();
+  };
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target.closest('.nav-item') : null;
+    if (!target) return;
+    window.setTimeout(refresh, 120);
+  }, false);
+  document.addEventListener('input', (event) => {
+    if (event.target instanceof HTMLInputElement && targetInSimulation(event.target)) window.setTimeout(addSimulationChart, 50);
+  }, false);
+  document.addEventListener('change', (event) => {
+    if (event.target instanceof HTMLInputElement && targetInSimulation(event.target)) window.setTimeout(addSimulationChart, 50);
+  }, false);
+  window.setTimeout(refresh, 500);
+}
+
+function targetInSimulation(target: Element) {
+  return Boolean(target.closest('.simulation-enhanced'));
+}
