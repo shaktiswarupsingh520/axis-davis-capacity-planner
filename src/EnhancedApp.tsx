@@ -1,12 +1,14 @@
 import { useEffect } from 'react';
 import RealAppV2 from './RealAppV2';
-import { installUiFixesV3 } from './uiFixesV3';
-import { installProductionPdfV3 } from './productionPdfV3';
+import { installUiFixesV4 } from './uiFixesV4';
+import { installSimulationProjectionV4 } from './simulationProjectionV4';
+import { installProductionPdfV4 } from './productionPdfV4';
 
 export default function EnhancedApp() {
   useEffect(() => {
-    installUiFixesV3();
-    installProductionPdfV3();
+    installUiFixesV4();
+    installSimulationProjectionV4();
+    installProductionPdfV4();
   }, []);
   return <RealAppV2 />;
 }
