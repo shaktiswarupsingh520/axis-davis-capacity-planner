@@ -5,7 +5,32 @@ interface QueryResult { records?:Array<Record<string,unknown>|null>; }
 interface HostEntityRecord { id?:unknown; 'entity.name'?:unknown; hostGroupName?:unknown; managementZones?:unknown; }
 const RANGE_SPEC:Record<TimeRange,{from:string;interval:string;throughputInterval:string}>={'1h':{from:'1h',interval:'1m',throughputInterval:'1m'},'6h':{from:'6h',interval:'5m',throughputInterval:'1m'},'24h':{from:'24h',interval:'15m',throughputInterval:'5m'},'7d':{from:'7d',interval:'6h',throughputInterval:'15m'},'30d':{from:'30d',interval:'1d',throughputInterval:'1h'}};
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
-async function executeDql<T>(query:string):Promise<T[]>{const response=await queryExecutionClient.queryExecute({body:{query,requestTimeoutMilliseconds:30000,maxResultRecords:5000}});let result=response.result as QueryResult|undefined;let token=response.requestToken;let state=response.state;for(let i=0;!result&&token&&i<30;i++){const p=await queryExecutionClient.queryPoll({requestToken:token,requestTimeoutMilliseconds:30000});state=p.state;result=p.result as QueryResult|undefined;if(!result&&state==='RUNNING')await sleep(300);}if(!result)throw new Error(`Dynatrace DQL query did not return a result (state: ${state}).`);return(result.records??[]).filter(Boolean) as T[];}
+async function executeDql<T>(query:string):Promise<T[]>{
+  try {
+    const response=await queryExecutionClient.queryExecute({body:{query,requestTimeoutMilliseconds:30000,maxResultRecords:5000}});
+    console.debug('[DYNATRACE][queryExecute]',{query,state:response.state,requestToken:response.requestToken,hasResult:Boolean(response.result),response});
+    let result=response.result as QueryResult|undefined;
+    const token=response.requestToken;
+    let state=response.state;
+    for(let attempt=0;!result&&token&&attempt<30;attempt++){
+      try {
+        const polled=await queryExecutionClient.queryPoll({requestToken:token,requestTimeoutMilliseconds:30000});
+        console.debug('[DYNATRACE][queryPoll]',{attempt,requestToken:token,state:polled.state,hasResult:Boolean(polled.result),response:polled});
+        state=polled.state;
+        result=polled.result as QueryResult|undefined;
+        if(!result&&state==='RUNNING') await sleep(300);
+      } catch(pollError) {
+        console.error('[DYNATRACE][queryPoll ERROR]',{attempt,requestToken:token,query,error:pollError});
+        throw pollError;
+      }
+    }
+    if(!result) throw new Error(`Dynatrace DQL query did not return a result (state: ${state}). Query: ${query}`);
+    return(result.records??[]).filter(Boolean) as T[];
+  } catch(error) {
+    console.error('[DYNATRACE][DQL ERROR]',{query,error});
+    throw error;
+  }
+}
 const hostId=(v:unknown):string=>Array.isArray(v)?hostId(v[0]):v&&typeof v==='object'?hostId((v as Record<string,unknown>).value??(v as Record<string,unknown>).values??(v as Record<string,unknown>).data??(v as Record<string,unknown>).id):String(v??'').trim();
 const numeric=(v:unknown):number|undefined=>{if(typeof v==='number'&&Number.isFinite(v))return v;if(Array.isArray(v)){for(let i=v.length-1;i>=0;i--){const n=numeric(v[i]);if(n!==undefined)return n;}return undefined;}if(typeof v==='string'&&v.trim()){const n=Number(v);return Number.isFinite(n)?n:undefined;}if(v&&typeof v==='object'){const o=v as Record<string,unknown>;for(const k of ['value','double','number']){const n=numeric(o[k]);if(n!==undefined)return n;}}return undefined;};
 const series=(v:unknown):Array<number|null>=>Array.isArray(v)?v.map(x=>numeric(x)??null):v&&typeof v==='object'?series((v as Record<string,unknown>).values??(v as Record<string,unknown>).data):(numeric(v)===undefined?[]:[numeric(v)!]);
