@@ -1,13 +1,12 @@
 {
   "name": "axis-davis-capacity-planner",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "dt:analyze": "npx dt-app analyze",
     "dt:build": "npx dt-app build",
@@ -20,6 +19,7 @@
     "@dynatrace-sdk/client-davis-copilot": "^1.0.0",
     "@dynatrace-sdk/client-query": "^1.26.0",
     "@supabase/supabase-js": "^2.57.4",
+    "jspdf": "^3.0.1",
     "lucide-react": "^0.446.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -27,7 +27,7 @@
   "devDependencies": {
     "@eslint/js": "^9.9.1",
     "@types/react": "^18.3.5",
-    "@types/react-dom": "^18.3.0",
+    "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.18",
     "eslint": "^9.9.1",
