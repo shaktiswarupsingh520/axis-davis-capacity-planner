@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom';
 import { SegmentSelector, useSegments } from '@dynatrace/strato-components/filters';
 import { queryExecutionClient } from '@dynatrace-sdk/client-query';
 
-type FilterSegment = { id: string; variables?: Array<{ name: string; values: string[] }> };
+type FilterSegment = { id: string; variables?: Array<{ name: string; values: string[] }>; name?: string };
 type QueryConfig = { body?: Record<string, unknown>; [key: string]: unknown };
-const win = window as Window & { __axisSegmentQueryPatchV42?: boolean; __axisSegmentsV42?: FilterSegment[] };
+const win = window as Window & { __axisSegmentQueryPatchV42?: boolean; __axisSegmentsV42?: Array<{ id: string; variables?: Array<{ name: string; values: string[] }> }>; __axisSegmentDisplayV42?: string };
 
 function installQuerySegmentBridge() {
   if (win.__axisSegmentQueryPatchV42) return;
@@ -54,7 +54,9 @@ export default function SegmentScopeV42() {
   }, [target]);
 
   useEffect(() => {
-    win.__axisSegmentsV42 = segments.filter((segment) => segment?.id).map((segment) => ({ id: segment.id, variables: (segment.variables ?? []).map((variable) => ({ name: variable.name, values: variable.values })) }));
+    const raw = segments as unknown as FilterSegment[];
+    win.__axisSegmentsV42 = raw.filter((segment) => segment?.id).map((segment) => ({ id: segment.id, variables: (segment.variables ?? []).map((variable) => ({ name: variable.name, values: variable.values })) }));
+    win.__axisSegmentDisplayV42 = raw.map((segment) => segment.name).filter(Boolean).join(', ') || 'All Segments';
     window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')?.click(), 80);
   }, [segments]);
 
