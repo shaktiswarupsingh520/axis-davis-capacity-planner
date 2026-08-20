@@ -8,7 +8,7 @@
     "scopes": [
       { "name": "storage:metrics:read", "comment": "Read host and service metrics from Grail" },
       { "name": "storage:buckets:read", "comment": "Read Grail metric buckets required by timeseries queries" },
-      { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" },
+      { "name": "storage:entities:read", "comment": "Read host entities from Grail" },
       { "name": "storage:spans:read", "comment": "Read request-root spans for application-service throughput verification" },
       { "name": "storage:filter-segments:read", "comment": "Read Dynatrace filter segments used to scope capacity data" },
       { "name": "davis:analyzers:read", "comment": "Read Dynatrace Intelligence analyzer definitions" },
