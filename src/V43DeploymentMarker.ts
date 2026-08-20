@@ -1,0 +1,1 @@
+export const AXIS_DAVIS_CAPACITY_PLANNER_VERSION = '1.0.43';
