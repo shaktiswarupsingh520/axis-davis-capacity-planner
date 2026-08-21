@@ -1,5 +1,5 @@
 {
-  "environmentUrl": "https://nlq64817.apps.dynatrace.com/",
+  "environmentUrl": "https://axis-prod.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
     "version": "1.0.40",
