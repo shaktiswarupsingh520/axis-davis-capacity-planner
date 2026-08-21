@@ -1,0 +1,1 @@
+Release 1.0.48 adds SRE use-case workbench and interactive Davis Capacity Copilot.
