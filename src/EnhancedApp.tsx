@@ -6,6 +6,8 @@ import { installProductionPdfV4 } from './productionPdfV4';
 import { installAiForecastEnhancementV42 } from './aiForecastEnhancementV42';
 import { installManagementZoneSearchV43 } from './managementZoneSearchV43';
 import { installCapacityUxV44 } from './capacityUxV44';
+import { installCapacityUxV45 } from './capacityUxV45';
+import { installHostHoverFixV45 } from './hostHoverFixV45';
 
 export default function EnhancedApp() {
   useEffect(() => {
@@ -15,6 +17,8 @@ export default function EnhancedApp() {
     installAiForecastEnhancementV42();
     installManagementZoneSearchV43();
     installCapacityUxV44();
+    installCapacityUxV45();
+    installHostHoverFixV45();
   }, []);
   return <RealAppV2 />;
 }
