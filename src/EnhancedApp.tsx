@@ -10,6 +10,7 @@ import { installCapacityUxV45 } from './capacityUxV45';
 import { installHostHoverFixV45 } from './hostHoverFixV45';
 import { installForecastHoverV45 } from './forecastHoverV45';
 import { installCapacityPresentationV46 } from './capacityPresentationV46';
+import { installCapacityPresentationV47 } from './capacityPresentationV47';
 
 export default function EnhancedApp() {
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function EnhancedApp() {
     installHostHoverFixV45();
     installForecastHoverV45();
     installCapacityPresentationV46();
+    installCapacityPresentationV47();
   }, []);
   return <RealAppV2 />;
 }
