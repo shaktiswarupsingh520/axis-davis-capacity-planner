@@ -5,7 +5,7 @@ import { installSimulationProjectionV4 } from './simulationProjectionV4';
 import { installProductionPdfV4 } from './productionPdfV4';
 import { installAiForecastEnhancementV42 } from './aiForecastEnhancementV42';
 import { installManagementZoneSearchV43 } from './managementZoneSearchV43';
-import { installCapacityUxV44 } from './capacityUxV44';
+import { installCapacityUxV45 } from './capacityUxV45';
 
 export default function EnhancedApp() {
   useEffect(() => {
@@ -14,7 +14,7 @@ export default function EnhancedApp() {
     installProductionPdfV4();
     installAiForecastEnhancementV42();
     installManagementZoneSearchV43();
-    installCapacityUxV44();
+    installCapacityUxV45();
   }, []);
   return <RealAppV2 />;
 }
