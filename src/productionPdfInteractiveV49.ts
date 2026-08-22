@@ -20,8 +20,7 @@ const setText = (doc: jsPDF, c: readonly number[]) => doc.setTextColor(c[0], c[1
 
 function addInteractivePage(doc: jsPDF) {
   doc.addPage();
-  const page = doc.getNumberOfPages();
-  const total = page;
+  const total = doc.getNumberOfPages();
 
   setFill(doc, C.navy);
   doc.rect(0, 0, 595, 82, 'F');
@@ -81,9 +80,9 @@ function addInteractivePage(doc: jsPDF) {
     setText(doc, C.blue);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
-    y += doc.splitTextToSize(`“${lastQuestion}”`, 500).length * 12;
-    doc.text(doc.splitTextToSize(`“${lastQuestion}”`, 500), 48, y - 12);
-    y += 12;
+    const questionLines = doc.splitTextToSize(`“${lastQuestion}”`, 500);
+    doc.text(questionLines, 48, y);
+    y += questionLines.length * 12 + 12;
     if (lastAnswer) {
       setText(doc, C.muted);
       doc.setFont('helvetica', 'normal');
@@ -94,10 +93,11 @@ function addInteractivePage(doc: jsPDF) {
     }
   }
 
+  const contextY = Math.min(y + 4, 690);
   setText(doc, C.navy);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.text('Capacity context available to Davis', 38, Math.min(y + 4, 690));
+  doc.text('Capacity context available to Davis', 38, contextY);
   setText(doc, C.text);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
@@ -108,9 +108,9 @@ function addInteractivePage(doc: jsPDF) {
     '• What-if traffic simulation values when a traffic scenario is supplied',
     '• Davis problem counts and problem context for problem-oriented questions',
   ];
-  contextLines.forEach((value, index) => doc.text(value, 46, Math.min(y + 26 + index * 13, 720)));
+  contextLines.forEach((value, index) => doc.text(value, 46, Math.min(contextY + 26 + index * 13, 720)));
 
-  // Re-write all footers so the new report page has correct pagination.
+  // Rewrite all footers so the expanded report has correct pagination.
   for (let i = 1; i <= total; i += 1) {
     doc.setPage(i);
     setFill(doc, C.white);
@@ -142,9 +142,9 @@ export function installProductionPdfInteractiveV49() {
   }, true);
 
   const originalSave = jsPDF.prototype.save;
-  const wrappedSave = function (this: jsPDF, filename?: string, options?: Record<string, unknown>) {
+  const wrappedSave = function (this: jsPDF, filename?: string, options?: { returnPromise?: boolean }) {
     addInteractivePage(this);
-    return originalSave.call(this, filename as string, options);
+    return originalSave.call(this, filename, options);
   };
   jsPDF.prototype.save = wrappedSave;
 }
