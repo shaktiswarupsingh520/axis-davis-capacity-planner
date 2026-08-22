@@ -4,6 +4,9 @@ let installed = false;
 let lastQuestion = '';
 let lastAnswer = '';
 
+type SaveOptions = { returnPromise?: boolean };
+type SaveReturn = jsPDF | Promise<void>;
+
 const C = {
   navy: [22, 41, 67] as const,
   blue: [44, 103, 180] as const,
@@ -110,7 +113,6 @@ function addInteractivePage(doc: jsPDF) {
   ];
   contextLines.forEach((value, index) => doc.text(value, 46, Math.min(contextY + 26 + index * 13, 720)));
 
-  // Rewrite all footers so the expanded report has correct pagination.
   for (let i = 1; i <= total; i += 1) {
     doc.setPage(i);
     setFill(doc, C.white);
@@ -142,9 +144,17 @@ export function installProductionPdfInteractiveV49() {
   }, true);
 
   const originalSave = jsPDF.prototype.save;
-  const wrappedSave = function (this: jsPDF, filename?: string, options?: { returnPromise?: boolean }) {
-    addInteractivePage(this);
-    return originalSave.call(this, filename, options);
+  type SaveMethod = {
+    (filename?: string): jsPDF;
+    (filename: string, options: { returnPromise: true }): Promise<void>;
   };
-  jsPDF.prototype.save = wrappedSave;
+  const original = originalSave as SaveMethod;
+  const wrappedSave = function (this: jsPDF, filename?: string, options?: SaveOptions): SaveReturn {
+    addInteractivePage(this);
+    if (options?.returnPromise === true) {
+      return original.call(this, filename ?? 'axis-capacity-report.pdf', { returnPromise: true });
+    }
+    return original.call(this, filename);
+  };
+  jsPDF.prototype.save = wrappedSave as typeof jsPDF.prototype.save;
 }
