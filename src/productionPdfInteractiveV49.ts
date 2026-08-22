@@ -148,13 +148,15 @@ export function installProductionPdfInteractiveV49() {
     (filename?: string): jsPDF;
     (filename: string, options: { returnPromise: true }): Promise<void>;
   };
-  const original = originalSave as SaveMethod;
+  const original = originalSave as unknown as SaveMethod;
   const wrappedSave = function (this: jsPDF, filename?: string, options?: SaveOptions): SaveReturn {
     addInteractivePage(this);
     if (options?.returnPromise === true) {
       return original.call(this, filename ?? 'axis-capacity-report.pdf', { returnPromise: true });
     }
-    return original.call(this, filename);
+    return filename === undefined
+      ? original.call(this)
+      : original.call(this, filename);
   };
   jsPDF.prototype.save = wrappedSave as typeof jsPDF.prototype.save;
 }
