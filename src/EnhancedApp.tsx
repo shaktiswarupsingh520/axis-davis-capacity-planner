@@ -13,7 +13,8 @@ import { installCapacityPresentationV46 } from './capacityPresentationV46';
 import { installCapacityPresentationV47 } from './capacityPresentationV47';
 import { installUseCaseWorkbenchV48 } from './useCaseWorkbenchV48';
 import { installInteractiveCapacityAiV47 } from './interactiveCapacityAiV47';
-import { installProductionPdfInteractiveV49 } from './productionPdfInteractiveV49';
+import { installSimulationMemoryFixV50 } from './simulationMemoryFixV50';
+import { installProductionPdfInteractiveV50 } from './productionPdfInteractiveV50';
 import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
@@ -31,7 +32,8 @@ export default function EnhancedApp() {
     installCapacityPresentationV47();
     installUseCaseWorkbenchV48();
     installInteractiveCapacityAiV47();
-    installProductionPdfInteractiveV49();
+    installSimulationMemoryFixV50();
+    installProductionPdfInteractiveV50();
   }, []);
   return <RealAppV2 />;
 }
