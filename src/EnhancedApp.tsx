@@ -12,6 +12,8 @@ import { installForecastHoverV45 } from './forecastHoverV45';
 import { installCapacityPresentationV46 } from './capacityPresentationV46';
 import { installCapacityPresentationV47 } from './capacityPresentationV47';
 import { installUseCaseWorkbenchV48 } from './useCaseWorkbenchV48';
+import { installInteractiveCapacityAiV47 } from './interactiveCapacityAiV47';
+import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
   useEffect(() => {
@@ -27,6 +29,7 @@ export default function EnhancedApp() {
     installCapacityPresentationV46();
     installCapacityPresentationV47();
     installUseCaseWorkbenchV48();
+    installInteractiveCapacityAiV47();
   }, []);
   return <RealAppV2 />;
 }
