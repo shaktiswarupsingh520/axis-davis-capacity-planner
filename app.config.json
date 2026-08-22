@@ -2,7 +2,7 @@
   "environmentUrl": "https://axis-prod.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.51",
+    "version": "1.0.52",
     "description": "Axis infrastructure capacity planning and forecasting.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
@@ -15,11 +15,11 @@
       { "name": "davis:analyzers:execute", "comment": "Execute Dynatrace Intelligence Generic Forecast Analyzer" },
       { "name": "davis-copilot:conversations:execute", "comment": "Generate AI-assisted capacity responses using Dynatrace Assist" },
       { "name": "davis-copilot:nl2dql:execute", "comment": "Generate read-only DQL from natural-language capacity questions" },
-      { "name": "davis-copilot:dql2nl:execute", "comment": "Translate DQL for agentic synthesis" },
+      { "name": "davis-copilot:dql2nl:execute", "comment": "Translate DQL for capacity-agent synthesis" },
       { "name": "document:documents:read", "comment": "Read conversation documents for future session continuity" },
       { "name": "document:documents:write", "comment": "Persist agentic conversation documents when enabled" },
       { "name": "document:documents:delete", "comment": "Manage persisted agentic conversation documents" },
-      { "name": "hub:catalog:read", "comment": "Allow agentic capability discovery" },
+      { "name": "hub:catalog:read", "comment": "Allow capability discovery" },
       { "name": "mcp-gateway:servers:read", "comment": "Discover permitted Dynatrace MCP tools" },
       { "name": "mcp-gateway:servers:invoke", "comment": "Invoke permitted Dynatrace MCP tools" }
     ]
