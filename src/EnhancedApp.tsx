@@ -13,6 +13,7 @@ import { installUseCaseWorkbenchV48 } from './useCaseWorkbenchV48';
 import { installInteractiveCapacityAiV47 } from './interactiveCapacityAiV47';
 import { installSimulationMemoryFixV50 } from './simulationMemoryFixV50';
 import { installOverviewRiskCardsV51 } from './overviewRiskCardsV51';
+import { installDynatraceAlertDumpV54 } from './dynatraceAlertDumpV54';
 import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
@@ -30,6 +31,7 @@ export default function EnhancedApp() {
     installInteractiveCapacityAiV47();
     installSimulationMemoryFixV50();
     installOverviewRiskCardsV51();
+    installDynatraceAlertDumpV54();
   }, []);
   return <RealAppV2 />;
 }
