@@ -46,8 +46,12 @@ function problemDuration(row: ProblemRecord): string {
 const COLUMNS = ['Problem ID','Title','Status','Severity','Category','Impact Level','Start Time','End Time','Duration','Affected Entities','Root Cause Entity','Description','Alerting Profile','Duplicate','Maintenance'];
 const KEYS = ['display_id','event.name','event.status','event.severity','event.category','dt.davis.impact_level','event.start','event.end','problem.duration','affected_entity_names','root_cause_entity_id','event.description','labels.alerting_profile','dt.davis.is_duplicate','maintenance.is_under_maintenance'];
 
-function rowsForExport(rows: ProblemRecord[]) {
-  return rows.map(row => ({ ...row, 'problem.duration': problemDuration(row) }));
+function rowsForExport(rows: ProblemRecord[]): ProblemRecord[] {
+  return rows.map(row => {
+    const exportRow: ProblemRecord = { ...row };
+    exportRow['problem.duration'] = problemDuration(row);
+    return exportRow;
+  });
 }
 
 function downloadCsv(rows: ProblemRecord[]) {
