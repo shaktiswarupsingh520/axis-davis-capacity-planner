@@ -31,16 +31,34 @@ async function executeDql(query: string): Promise<ProblemRecord[]> {
   return (result.records ?? []).filter(Boolean) as ProblemRecord[];
 }
 
-const COLUMNS = ['Problem ID','Title','Status','Severity','Category','Impact Level','Start Time','End Time','Affected Entities','Root Cause Entity','Description','Alerting Profile','Duplicate','Maintenance'];
-const KEYS = ['display_id','event.name','event.status','event.severity','event.category','dt.davis.impact_level','event.start','event.end','affected_entity_names','root_cause_entity_id','event.description','labels.alerting_profile','dt.davis.is_duplicate','maintenance.is_under_maintenance'];
+function problemDuration(row: ProblemRecord): string {
+  const started = text(row['event.start']);
+  const ended = text(row['event.end']);
+  const start = new Date(started);
+  const end = ended ? new Date(ended) : null;
+  if (Number.isNaN(start.getTime())) return '—';
+  const endTime = end && !Number.isNaN(end.getTime()) ? end.getTime() : Date.now();
+  const minutes = Math.max(0, endTime - start.getTime()) / 60000;
+  if (minutes < 60) return `${minutes.toFixed(1)} min`;
+  return `${(minutes / 60).toFixed(1)} h`;
+}
+
+const COLUMNS = ['Problem ID','Title','Status','Severity','Category','Impact Level','Start Time','End Time','Duration','Affected Entities','Root Cause Entity','Description','Alerting Profile','Duplicate','Maintenance'];
+const KEYS = ['display_id','event.name','event.status','event.severity','event.category','dt.davis.impact_level','event.start','event.end','problem.duration','affected_entity_names','root_cause_entity_id','event.description','labels.alerting_profile','dt.davis.is_duplicate','maintenance.is_under_maintenance'];
+
+function rowsForExport(rows: ProblemRecord[]) {
+  return rows.map(row => ({ ...row, 'problem.duration': problemDuration(row) }));
+}
 
 function downloadCsv(rows: ProblemRecord[]) {
-  const lines = [COLUMNS.map(escCsv).join(','), ...rows.map(row => KEYS.map(key => escCsv(row[key])).join(','))];
+  const exportRows = rowsForExport(rows);
+  const lines = [COLUMNS.map(escCsv).join(','), ...exportRows.map(row => KEYS.map(key => escCsv(row[key])).join(','))];
   download(`\uFEFF${lines.join('\r\n')}`, 'text/csv;charset=utf-8', `dynatrace-problem-alert-dump-${new Date().toISOString().slice(0,10)}.csv`);
 }
 function downloadExcel(rows: ProblemRecord[]) {
+  const exportRows = rowsForExport(rows);
   const header = COLUMNS.map(escHtml).map(v => `<th>${v}</th>`).join('');
-  const body = rows.map(row => `<tr>${KEYS.map(key => `<td>${escHtml(row[key])}</td>`).join('')}</tr>`).join('');
+  const body = exportRows.map(row => `<tr>${KEYS.map(key => `<td>${escHtml(row[key])}</td>`).join('')}</tr>`).join('');
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>table{border-collapse:collapse;font-family:Arial;font-size:10pt}th{background:#183b63;color:#fff;font-weight:bold;border:1px solid #b8c2cc;padding:7px}td{border:1px solid #d7dde4;padding:6px;vertical-align:top}tr:nth-child(even){background:#f4f7fa}</style></head><body><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></body></html>`;
   download(`\uFEFF${html}`, 'application/vnd.ms-excel;charset=utf-8', `dynatrace-problem-alert-dump-${new Date().toISOString().slice(0,10)}.xls`);
 }
@@ -54,9 +72,7 @@ function buildProblemQuery(range: string, status: string, severity: string, zone
   const filters = ['not(dt.davis.is_duplicate)'];
   if (status !== 'ALL') filters.push(`event.status == "${status}"`);
   if (severity !== 'ALL') filters.push(`event.severity == ${severity}`);
-
   let query = `fetch dt.davis.problems, from:now()-${safeRange}, to:now() | filter ${filters.join(' and ')}`;
-
   if (zone !== 'All Management Zones') {
     const escaped = zone.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     query += `
@@ -71,7 +87,6 @@ function buildProblemQuery(range: string, status: string, severity: string, zone
 | filter isNotNull(zoneHostName)
 | dedup display_id`;
   }
-
   return `${query} | sort event.start desc | limit 1000`;
 }
 
@@ -110,10 +125,10 @@ function openAlertDump() {
   let rows: ProblemRecord[] = [];
   const render = () => {
     tbody.innerHTML = rows.length ? rows.map(row => {
-      const status = text(row['event.status']); const started = text(row['event.start']); const ended = text(row['event.end']);
-      const start = new Date(started); const end = ended ? new Date(ended) : null;
-      const duration = !Number.isNaN(start.getTime()) ? `${Math.max(0, ((end && !Number.isNaN(end.getTime()) ? end.getTime() : Date.now()) - start.getTime()) / 3600000).toFixed(1)} h` : '—';
-      return `<tr><td><strong>${escHtml(row.display_id)}</strong></td><td>${escHtml(row['event.name'])}</td><td class="alert-dump-status-${status.toLowerCase()}">${escHtml(status)}</td><td>${escHtml(severityLabel(row['event.severity']))}</td><td>${escHtml(row['event.category'])}</td><td>${Number.isNaN(start.getTime()) ? escHtml(started) : start.toLocaleString()}</td><td>${duration}</td><td>${escHtml(row.affected_entity_names || row.affected_entity_ids)}</td></tr>`;
+      const status = text(row['event.status']); const started = text(row['event.start']);
+      const start = new Date(started);
+      const duration = problemDuration(row);
+      return `<tr><td><strong>${escHtml(row.display_id)}</strong></td><td>${escHtml(row['event.name'])}</td><td class="alert-dump-status-${status.toLowerCase()}">${escHtml(status)}</td><td>${escHtml(severityLabel(row['event.severity']))}</td><td>${escHtml(row['event.category'])}</td><td>${Number.isNaN(start.getTime()) ? escHtml(started) : start.toLocaleString()}</td><td>${escHtml(duration)}</td><td>${escHtml(row.affected_entity_names || row.affected_entity_ids)}</td></tr>`;
     }).join('') : '<tr><td colspan="8" class="alert-dump-empty">No problems matched the selected filters.</td></tr>';
     modal.querySelector<HTMLElement>('.alert-dump-count')!.textContent = `${rows.length} problem${rows.length === 1 ? '' : 's'}`; csvButton.disabled = !rows.length; xlsButton.disabled = !rows.length;
   };
