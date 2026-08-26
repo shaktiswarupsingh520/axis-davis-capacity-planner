@@ -10,6 +10,11 @@ const text = (value: unknown): string => {
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 };
+const normalizeTimestamp = (value: unknown): string => {
+  const raw = text(value).trim();
+  if (!raw) return '';
+  return raw.replace(/^"(.*)"$/, '$1').trim();
+};
 const escCsv = (value: unknown) => `"${text(value).replace(/"/g, '""')}"`;
 const escHtml = (value: unknown) => text(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const download = (content: BlobPart, type: string, filename: string) => {
@@ -32,8 +37,8 @@ async function executeDql(query: string): Promise<ProblemRecord[]> {
 }
 
 function problemDuration(row: ProblemRecord): string {
-  const started = text(row['event.start']);
-  const ended = text(row['event.end']);
+  const started = normalizeTimestamp(row['event.start']);
+  const ended = normalizeTimestamp(row['event.end']);
   const start = new Date(started);
   const end = ended ? new Date(ended) : null;
   if (Number.isNaN(start.getTime())) return '—';
@@ -129,7 +134,7 @@ function openAlertDump() {
   let rows: ProblemRecord[] = [];
   const render = () => {
     tbody.innerHTML = rows.length ? rows.map(row => {
-      const status = text(row['event.status']); const started = text(row['event.start']);
+      const status = text(row['event.status']); const started = normalizeTimestamp(row['event.start']);
       const start = new Date(started);
       const duration = problemDuration(row);
       return `<tr><td><strong>${escHtml(row.display_id)}</strong></td><td>${escHtml(row['event.name'])}</td><td class="alert-dump-status-${status.toLowerCase()}">${escHtml(status)}</td><td>${escHtml(severityLabel(row['event.severity']))}</td><td>${escHtml(row['event.category'])}</td><td>${Number.isNaN(start.getTime()) ? escHtml(started) : start.toLocaleString()}</td><td>${escHtml(duration)}</td><td>${escHtml(row.affected_entity_names || row.affected_entity_ids)}</td></tr>`;
