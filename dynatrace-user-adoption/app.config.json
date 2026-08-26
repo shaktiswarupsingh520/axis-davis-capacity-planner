@@ -1,0 +1,19 @@
+{
+  "environmentUrl": "https://axis-prod.apps.dynatrace.com/",
+  "app": {
+    "name": "Dynatrace User Adoption",
+    "version": "1.0.0",
+    "description": "Dynatrace user login and management-zone adoption analytics.",
+    "id": "my.axis.dynatrace.user.adoption",
+    "scopes": [
+      { "name": "storage:buckets:read", "comment": "Read Grail data required by user adoption analytics" },
+      { "name": "storage:events:read", "comment": "Read Dynatrace audit and event records" },
+      { "name": "storage:entities:read", "comment": "Read entities and management-zone relationships" },
+      { "name": "hub:catalog:read", "comment": "Allow capability discovery" },
+      { "name": "mcp-gateway:servers:read", "comment": "Discover permitted Dynatrace MCP tools" },
+      { "name": "mcp-gateway:servers:invoke", "comment": "Invoke permitted Dynatrace MCP tools when required" }
+    ]
+  },
+  "build": { "sourceRoot": "src" },
+  "server": { "port": 3002 }
+}
