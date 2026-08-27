@@ -1,1 +1,31 @@
-{}
+{
+  "environmentUrl": "https://axis-prod.apps.dynatrace.com/",
+  "app": {
+    "name": "Axis Davis Capacity Planner",
+    "version": "1.0.59",
+    "description": "Axis infrastructure capacity planning, forecasting and AI-assisted incident RCA.",
+    "id": "my.axis.davis.capacity.planner",
+    "scopes": [
+      { "name": "storage:metrics:read", "comment": "Read host and service metrics from Grail" },
+      { "name": "storage:buckets:read", "comment": "Read Grail data required by the capacity agent" },
+      { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" },
+      { "name": "storage:spans:read", "comment": "Read request-root spans for application-service throughput analysis" },
+      { "name": "storage:events:read", "comment": "Read Davis problems and event records for interactive capacity questions and RCA" },
+      { "name": "storage:logs:read", "comment": "Read incident-window logs for RCA evidence" },
+      { "name": "davis:analyzers:read", "comment": "Read Dynatrace Intelligence analyzer definitions" },
+      { "name": "davis:analyzers:execute", "comment": "Execute Dynatrace Intelligence problem analysis and forecast analyzers" },
+      { "name": "davis-copilot:conversations:execute", "comment": "Generate AI-assisted capacity responses and incident RCA using Dynatrace Assist" },
+      { "name": "davis-copilot:document-search:execute", "comment": "Allow RCA investigations to use Dynatrace document context when enabled" },
+      { "name": "davis-copilot:nl2dql:execute", "comment": "Generate read-only DQL from natural-language capacity questions" },
+      { "name": "davis-copilot:dql2nl:execute", "comment": "Translate DQL for capacity-agent synthesis" },
+      { "name": "document:documents:read", "comment": "Read conversation documents for future session continuity" },
+      { "name": "document:documents:write", "comment": "Persist agentic conversation documents when enabled" },
+      { "name": "document:documents:delete", "comment": "Manage persisted agentic conversation documents" },
+      { "name": "hub:catalog:read", "comment": "Allow capability discovery" },
+      { "name": "mcp-gateway:servers:read", "comment": "Discover permitted Dynatrace MCP tools" },
+      { "name": "mcp-gateway:servers:invoke", "comment": "Invoke permitted Dynatrace MCP tools" }
+    ]
+  },
+  "build": { "sourceRoot": "src" },
+  "server": { "port": 3001 }
+}
