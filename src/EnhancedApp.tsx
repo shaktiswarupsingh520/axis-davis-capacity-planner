@@ -15,6 +15,8 @@ import { installSimulationMemoryFixV50 } from './simulationMemoryFixV50';
 import { installOverviewRiskCardsV51 } from './overviewRiskCardsV51';
 import { installDynatraceAlertDumpV54 } from './dynatraceAlertDumpV54';
 import { installAiRootCauseRcaV3 } from './aiRootCauseRcaV3';
+import { installRcaWorkbenchV60 } from './rcaWorkbenchV60';
+import { installRcaDisplayFixV60 } from './rcaDisplayFixV60';
 import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
@@ -34,6 +36,8 @@ export default function EnhancedApp() {
     installOverviewRiskCardsV51();
     installDynatraceAlertDumpV54();
     installAiRootCauseRcaV3();
+    installRcaWorkbenchV60();
+    installRcaDisplayFixV60();
   }, []);
   return <RealAppV2 />;
 }
