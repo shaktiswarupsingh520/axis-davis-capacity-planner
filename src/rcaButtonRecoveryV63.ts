@@ -1,3 +1,4 @@
+import { jsPDF } from 'jspdf';
 import { publicClient } from '@dynatrace-sdk/client-davis-copilot';
 import { queryExecutionClient } from '@dynatrace-sdk/client-query';
 
@@ -8,198 +9,45 @@ type ConversationArgs = Parameters<RecommenderConversation>[0];
 
 const PANEL_ID = 'axis-rca-v60';
 const MARK = 'data-axis-rca-recovery-v63';
-
 const asText = (v: unknown): string => Array.isArray(v) ? v.map(asText).filter(Boolean).join('; ') : v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-const esc = (v: string) => v.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]!));
-const dqlEscape = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+const esc = (v: string) => v.replace(/[&<>\"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;' }[c]!));
+const dqlEscape = (v: string) => v.replace(/\\/g, '\\\\').replace(/\"/g, '\\"');
+async function runDql(query: string, max = 100): Promise<Row[]> { const started = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: max } }); let result = started.result as QueryResult | undefined; let state = started.state; if (!result && started.requestToken) { for (let i = 0; i < 30; i += 1) { const polled = await queryExecutionClient.queryPoll({ requestToken: started.requestToken, requestTimeoutMilliseconds: 30000 }); state = polled.state; result = polled.result as QueryResult | undefined; if (result || state !== 'RUNNING') break; await new Promise(resolve => setTimeout(resolve, 250)); } } if (!result) throw new Error(`DQL failed to complete (state: ${state}).`); return (result.records ?? []).filter(Boolean) as Row[]; }
+function extractAssistText(value: unknown): string { if (typeof value === 'string') return value.trim(); if (!value || typeof value !== 'object') return ''; const v = value as Record<string, unknown>; for (const key of ['text','answer','content','message']) { const candidate = extractAssistText(v[key]); if (candidate) return candidate; } return (Array.isArray(v.tokens) ? v.tokens.map(asText).join('') : '').trim(); }
 
-async function runDql(query: string, max = 100): Promise<Row[]> {
-  const started = await queryExecutionClient.queryExecute({ body: { query, requestTimeoutMilliseconds: 30000, maxResultRecords: max } });
-  let result = started.result as QueryResult | undefined;
-  let state = started.state;
-  if (!result && started.requestToken) {
-    for (let i = 0; i < 30; i += 1) {
-      const polled = await queryExecutionClient.queryPoll({ requestToken: started.requestToken, requestTimeoutMilliseconds: 30000 });
-      state = polled.state;
-      result = polled.result as QueryResult | undefined;
-      if (result || state !== 'RUNNING') break;
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
-  }
-  if (!result) throw new Error(`DQL failed to complete (state: ${state}).`);
-  return (result.records ?? []).filter(Boolean) as Row[];
+const C = { navy:[20,35,64] as const, blue:[47,91,214] as const, cyan:[0,128,160] as const, green:[25,130,86] as const, amber:[202,132,30] as const, red:[190,55,55] as const, ink:[32,43,60] as const, muted:[96,109,128] as const, border:[218,224,233] as const, pale:[246,248,252] as const, white:[255,255,255] as const, softBlue:[235,241,255] as const, softGreen:[232,247,239] as const, softAmber:[255,247,227] as const, softRed:[253,237,237] as const };
+const W=595,H=842,M=38,CW=W-M*2;
+const safe=(s:string)=>s.replace(/[\u2018\u2019\u201c\u201d\u2013\u2014\u2022\u2713\u2717\u2192]/g,'-').replace(/[^\x20-\x7E]/g,' ');
+const fmtDate=(v:unknown)=>{const s=asText(v);if(!s)return '-';const d=new Date(s);return Number.isNaN(d.getTime())?s:d.toLocaleString('en-IN',{year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'UTC'})+' UTC';};
+const durationMinutes=(a:unknown,b:unknown)=>{const x=new Date(asText(a)).getTime(),y=new Date(asText(b)).getTime();return Number.isFinite(x)&&Number.isFinite(y)&&y>=x?(y-x)/60000:null;};
+const statusColor=(s:string)=>/active|open/i.test(s)?C.red:/closed|resolved/i.test(s)?C.green:C.amber;
+function text(doc:jsPDF,s:string,x:number,y:number,size=9,bold=false,color=C.ink){doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);doc.setTextColor(...color);doc.text(safe(s),x,y);}
+function wrap(doc:jsPDF,s:string,x:number,y:number,w:number,size=9,lead=13){doc.setFont('helvetica','normal');doc.setFontSize(size);doc.setTextColor(...C.ink);const lines=doc.splitTextToSize(safe(s),w) as string[];doc.text(lines,x,y);return y+lines.length*lead;}
+function rect(doc:jsPDF,x:number,y:number,w:number,h:number,fill=C.white,border=C.border,r=5){doc.setFillColor(...fill);doc.setDrawColor(...border);doc.roundedRect(x,y,w,h,r,r,'FD');}
+function pageHeader(doc:jsPDF,title:string,kicker:string,page:number,total:number){doc.setFillColor(...C.navy);doc.rect(0,0,W,62,'F');text(doc,'AXIS BANK  |  ApMoSys TECHNOLOGIES',M,20,8,true,C.white);text(doc,title,M,43,18,true,C.white);text(doc,kicker,W-M,20,7,false,[218,226,240]);text(doc,`${page} / ${total}`,W-M,43,8,true,C.white);}
+function footer(doc:jsPDF){doc.setDrawColor(...C.border);doc.line(M,H-32,W-M,H-32);text(doc,'Axis Davis Capacity Planner  |  AI-assisted incident RCA  |  Confidential',M,H-18,7,false,C.muted);text(doc,'Evidence-based analysis; recommendations require SRE/application validation.',W-M,H-18,6.5,false,C.muted);}
+function section(doc:jsPDF,title:string,y:number,subtitle?:string){doc.setFillColor(...C.blue);doc.roundedRect(M,y,4,18,2,2,'F');text(doc,title,M+12,y+13,12,true,C.navy);if(subtitle)text(doc,subtitle,W-M,y+13,7,false,C.muted);return y+28;}
+function pill(doc:jsPDF,label:string,value:string,x:number,y:number,w:number,fill:C,accent:C){rect(doc,x,y,w,50,fill,fill,7);text(doc,label.toUpperCase(),x+12,y+16,6.5,true,C.muted);text(doc,value,x+12,y+37,12,true,accent);}
+function table(doc:jsPDF,x:number,y:number,widths:number[],headers:string[],rows:string[][],rowH=22){const total=widths.reduce((a,b)=>a+b,0);doc.setFillColor(...C.navy);doc.roundedRect(x,y,total,rowH,4,4,'F');let xx=x;headers.forEach((h,i)=>{text(doc,h,xx+6,y+14,7,true,C.white);xx+=widths[i];});let yy=y+rowH;rows.forEach((row,ri)=>{doc.setFillColor(...(ri%2?C.pale:C.white));doc.setDrawColor(...C.border);doc.rect(x,yy,total,rowH,'FD');xx=x;row.forEach((cell,i)=>{const lines=doc.splitTextToSize(safe(cell),Math.max(15,widths[i]-12)) as string[];text(doc,lines[0]||'',xx+6,yy+14,6.8,false,C.ink);if(lines[1])text(doc,lines[1],xx+6,yy+21,6.3,false,C.ink);xx+=widths[i];});yy+=rowH;});return yy;}
+function bullet(doc:jsPDF,s:string,x:number,y:number,w:number,accent=C.blue){doc.setFillColor(...accent);doc.circle(x+3,y-3,2,'F');return wrap(doc,s,x+11,y,w-11,8.3,11)+3;}
+function parseRca(answer:string){const blocks:{heading:string,body:string[]}[]=[];let current:{heading:string,body:string[]}|null=null;for(const raw of answer.split(/\r?\n/)){const line=raw.trim();if(!line)continue;const h=line.match(/^#{1,4}\s*(.+)$/);if(h){current={heading:safe(h[1]).replace(/\*\*(.*?)\*\*/g,'$1'),body:[]};blocks.push(current);continue;}if(!current){current={heading:'AI Assessment',body:[]};blocks.push(current);}current.body.push(safe(line.replace(/^[-*]\s+/,'').replace(/^\d+[.)]\s+/,'').replace(/^\[[ xX]\]\s*/,'' )).replace(/\*\*(.*?)\*\*/g,'$1').replace(/`([^`]+)`/g,'$1'));}return blocks;}
+function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[]){
+  const doc=new jsPDF({unit:'pt',format:'a4',compress:true});const generated=new Date();const incident=asText(problem['event.name'])||'Dynatrace Davis Incident';const st=asText(problem['event.status'])||'UNKNOWN';const sev=asText(problem['event.severity'])||'-';const cat=asText(problem['event.category'])||'-';const root=asText(problem['root_cause.smartscape_entity'])||asText(problem.root_cause_entity_id)||'Not identified';const start=asText(problem['event.start']),end=asText(problem['event.end']);const mins=durationMinutes(start,end);const dur=mins===null?'Not available':mins<1?'<1 min':mins<60?`${mins.toFixed(1)} min`:`${(mins/60).toFixed(1)} hr`;const occ=history.length;const active=history.filter(x=>/active|open/i.test(asText(x['event.status']))).length;const closed=history.filter(x=>/closed|resolved/i.test(asText(x['event.status']))).length;const blocks=parseRca(answer);const TOTAL=7;
+  // Cover
+  doc.setFillColor(...C.navy);doc.rect(0,0,W,H,'F');doc.setFillColor(...C.blue);doc.rect(0,0,10,H,'F');text(doc,'AXIS BANK',M+10,58,12,true,C.white);text(doc,'ApMoSys TECHNOLOGIES',M+10,77,8,false,[190,205,228]);text(doc,'AI-ASSISTED',M+10,142,9,true,[128,177,255]);text(doc,'INCIDENT ROOT',M+10,171,27,true,C.white);text(doc,'CAUSE ANALYSIS',M+10,203,27,true,C.white);text(doc,problemId,M+10,242,13,true,[224,232,247]);wrap(doc,incident,M+10,275,450,15,21);doc.setDrawColor(255,255,255);doc.line(M+10,322,W-M,322);text(doc,'EXECUTIVE INCIDENT BRIEF',M+10,352,9,true,[128,177,255]);pill(doc,'Status',st,M+10,375,105,statusColor(st).map(v=>Math.min(255,v+50)) as C,statusColor(st));pill(doc,'Severity',`Level ${sev}`,M+125,375,105,[238,242,249] as C,C.navy);pill(doc,'Duration',dur,M+240,375,105,[238,242,249] as C,C.navy);pill(doc,'Recurrence',String(occ),M+355,375,105,[238,242,249] as C,C.red);let y=468;text(doc,'Incident window',M+10,y,7,true,[160,176,202]);y+=20;text(doc,fmtDate(start),M+10,y,10,true,C.white);text(doc,'to',M+210,y,8,false,[160,176,202]);text(doc,fmtDate(end),M+235,y,10,true,C.white);y+=44;text(doc,'Root-cause entity',M+10,y,7,true,[160,176,202]);y+=19;wrap(doc,root,M+10,y,470,10,14);text(doc,'Prepared by Axis Davis Capacity Planner',M+10,H-72,8,false,[160,176,202]);text(doc,`Generated ${generated.toLocaleString('en-IN')}`,M+10,H-52,8,false,[160,176,202]);text(doc,'CONFIDENTIAL',W-M,H-52,8,true,[160,176,202]);
+  // Executive view
+  doc.addPage();pageHeader(doc,'Executive Decision View','Leadership summary',2,TOTAL);y=92;y=section(doc,'Incident at a glance',y,'What leadership needs to know');pill(doc,'Problem ID',problemId,M,y,120,C.softBlue,C.blue);pill(doc,'Status',st,M+130,y,100,statusColor(st).map(v=>Math.min(255,v+55)) as C,statusColor(st));pill(doc,'Severity',`Level ${sev}`,M+240,y,105,C.softAmber,C.amber);pill(doc,'Category',cat,M+355,y,105,C.pale,C.navy);y+=65;rect(doc,M,y,CW,92,C.pale,C.border,7);text(doc,'PRIMARY FINDING',M+14,y+18,7,true,C.blue);y=wrap(doc,blocks.find(b=>/executive summary|summary/i.test(b.heading))?.body.join(' ')||`Davis identified ${incident} and the RCA was generated from the supplied Dynatrace evidence.`,M+14,y+39,CW-28,10,14)+8;y+=12;y=section(doc,'Impact & recurrence',y,'Observed operational risk');table(doc,M,y,[150,150,150],['Indicator','Observed','Leadership interpretation'],[['Incident duration',dur,'Time to recover / contain'],['Past occurrences',String(occ),occ>10?'High recurrence pressure':'Review recurrence trend'],['Active occurrences',String(active),active>0?'Ongoing operational risk':'No active recurrence'],['Closed occurrences',String(closed),'Historical recurrence sample']],21);y+=120;y=section(doc,'Incident facts',y);table(doc,M,y,[145,350],['Attribute','Value'],[['Incident',incident],['Root-cause entity',root],['Started',fmtDate(start)],['Ended',fmtDate(end)],['Affected users',asText(problem['dt.davis.affected_users_count'])||'Not available'],['Impact level',asText(problem['dt.davis.impact_level'])||'Not available']],22);footer(doc);
+  // Root cause
+  doc.addPage();pageHeader(doc,'Root Cause Assessment','Evidence and causal chain',3,TOTAL);y=92;y=section(doc,'Root cause assessment',y,'Evidence-backed interpretation');const rca=blocks.find(b=>/root cause assessment/i.test(b.heading));rect(doc,M,y,CW,100,C.softBlue,C.softBlue,7);text(doc,'ASSESSMENT',M+14,y+18,7,true,C.blue);y=wrap(doc,rca?.body.slice(0,3).join(' ')||'The available evidence identifies a Dynatrace root-cause entity. Underlying trigger should be treated according to the confidence and evidence gaps stated by the AI assessment.',M+14,y+40,CW-28,9.2,13)+12;y=section(doc,'Technical root-cause chain',y,'From signal to service effect');const chain=blocks.find(b=>/technical root|causal chain/i.test(b.heading));const chainLines=chain?.body||[];if(chainLines.length)chainLines.slice(0,6).forEach((line,i)=>{rect(doc,M,y,CW,42,i%2?C.pale:C.white,C.border,6);text(doc,`${i+1}`,M+12,y+26,11,true,C.blue);wrap(doc,line,M+34,y+18,CW-48,8.3,11);y+=50;});else y=bullet(doc,'Review the causal chain in the AI assessment and validate each transition against telemetry, events and service-flow evidence.',M,y,CW);y+=8;y=section(doc,'Proven vs. not proven',y);const gaps=blocks.find(b=>/evidence gaps|not proven|confidence/i.test(b.heading));table(doc,M,y,[260,235],['Evidence classification','Interpretation'],[['Proven / high confidence',rca?.body[0]||'Davis problem and root-cause entity are identified.'],['Inference / validation required',gaps?.body[0]||'Underlying trigger should be validated.'],['Evidence gap',gaps?.body[1]||'Additional telemetry may be required.']],22);footer(doc);
+  // Timeline
+  doc.addPage();pageHeader(doc,'Incident Timeline & Recurrence','Operational history',4,TOTAL);y=92;y=section(doc,'Incident timeline',y,'Primary Davis problem window');[['Detection / problem start',fmtDate(start),'Davis problem opened'],['Recovery / problem end',fmtDate(end),'Davis problem closed'],['Duration',dur,'Calculated from supplied start/end']].forEach((e,i)=>{const cx=M+20,cy=y+25+i*62;doc.setFillColor(...C.blue);doc.circle(cx,cy,6,'F');if(i<2){doc.setDrawColor(...C.border);doc.line(cx,cy+7,cx,cy+56);}text(doc,e[0],M+42,cy-2,7,true,C.muted);text(doc,e[1],M+42,cy+15,9,true,C.navy);text(doc,e[2],M+270,cy+7,8,false,C.ink);});y+=210;y=section(doc,'Past occurrences',y,`${occ} matching Davis records returned`);table(doc,M,y,[90,120,75,90,144],['Problem','Started','Status','Duration','Root-cause entity'],history.slice(0,18).map(x=>[asText(x.display_id)||'-',fmtDate(x['event.start']),asText(x['event.status'])||'-',asText(x['resolved_problem_duration'])||'-',asText(x['root_cause.smartscape_entity'])||'-']),20);footer(doc);
+  // Actions
+  doc.addPage();pageHeader(doc,'Remediation & Preventive Actions','Action plan',5,TOTAL);y=92;const immediate=blocks.find(b=>/immediate remediation|stabilization|triage/i.test(b.heading));const preventive=blocks.find(b=>/permanent|preventive|short-term|medium-term|long-term/i.test(b.heading));y=section(doc,'Immediate stabilization',y,'0-60 minute response');let list=immediate?.body||['Validate affected service health and current telemetry.','Confirm the causal chain using logs, service flow and dependency health.','Stabilize the service before permanent changes.'];list.slice(0,7).forEach(s=>{y=bullet(doc,s,M,y,CW,C.blue);});y+=12;y=section(doc,'Permanent / preventive controls',y,'Reduce recurrence risk');list=preventive?.body||['Strengthen observability around the identified root-cause entity.','Add preventive controls and capacity headroom where evidence supports them.','Automate recovery and validate under load.'];list.slice(0,8).forEach(s=>{y=bullet(doc,s,M,y,CW,C.green);});y+=12;y=section(doc,'Monitoring recommendations',y,'Operational guardrails');const monitoring=blocks.find(b=>/monitoring|alerting/i.test(b.heading));table(doc,M,y,[235,120,200],['Control','Suggested trigger','Action'],(monitoring?.body||[]).slice(0,7).map(s=>[s.slice(0,52),'Define with service baseline','Alert / investigate']),21);footer(doc);
+  // Validation
+  doc.addPage();pageHeader(doc,'Validation, Confidence & Governance','Close the RCA responsibly',6,TOTAL);y=92;const validation=blocks.find(b=>/validation checklist/i.test(b.heading));y=section(doc,'Validation checklist',y,'Evidence required before RCA closure');list=validation?.body||['Confirm the identified root cause with telemetry and application evidence.','Validate service health and downstream dependencies.','Confirm no recurrence after remediation.','Document the remediation implemented.'];list.slice(0,10).forEach(s=>{y=bullet(doc,s,M,y,CW,C.blue);});y+=10;const confidence=blocks.find(b=>/confidence/i.test(b.heading));y=section(doc,'RCA confidence',y);rect(doc,M,y,155,72,C.softAmber,C.softAmber,7);text(doc,'CONFIDENCE',M+14,y+20,7,true,C.amber);text(doc,confidence?.body[0]?.match(/\b(LOW|MEDIUM|HIGH)\b/i)?.[1]||'REVIEW',M+14,y+48,18,true,C.amber);wrap(doc,confidence?.body.join(' ')||'Confidence should be assessed against the available Dynatrace evidence and outstanding gaps.',M+175,y+20,CW-175,8.5,12);y+=92;y=section(doc,'Governance note',y);rect(doc,M,y,CW,80,C.pale,C.border,7);wrap(doc,'Dynatrace evidence, AI interpretation and proposed recommendations are intentionally separated. This document is decision support, not a substitute for engineering validation or formal incident-management approval.',M+14,y+23,CW-28,8.5,12);footer(doc);
+  // Appendix
+  doc.addPage();pageHeader(doc,'Appendix | AI RCA Detail','Source report content',7,TOTAL);y=92;y=section(doc,'AI-generated RCA detail',y,'Preserved from Dynatrace Assist');for(const b of blocks.length?blocks:[{heading:'AI Assessment',body:[answer]}]){if(y>760){footer(doc);doc.addPage();y=92;pageHeader(doc,'Appendix | AI RCA Detail','Source report content',doc.getNumberOfPages(),doc.getNumberOfPages());}text(doc,b.heading,M,y,10.5,true,C.navy);y+=17;for(const line of b.body.slice(0,12)){y=bullet(doc,line,M,y,CW,C.blue);if(y>770){footer(doc);doc.addPage();y=92;pageHeader(doc,'Appendix | AI RCA Detail','Source report content',doc.getNumberOfPages(),doc.getNumberOfPages());}}y+=8;}footer(doc);doc.save(`Axis-CIO-RCA-${problemId}.pdf`);
 }
 
-function extractAssistText(value: unknown): string {
-  if (typeof value === 'string') return value.trim();
-  if (!value || typeof value !== 'object') return '';
-  const v = value as Record<string, unknown>;
-  for (const key of ['text', 'answer', 'content', 'message']) {
-    const candidate = extractAssistText(v[key]);
-    if (candidate) return candidate;
-  }
-  const tokens = Array.isArray(v.tokens) ? v.tokens.map(asText).join('') : '';
-  return tokens.trim();
-}
-
-function pdfEscape(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[^\x20-\x7E]/g, ' ');
-}
-
-function createRcaPdf(problem: Row, problemId: string, answer: string, history: Row[]) {
-  const lines: string[] = [];
-  const addWrapped = (value: string, width = 105) => {
-    value.split(/\r?\n/).forEach(raw => {
-      const line = raw.trimEnd();
-      if (!line) { lines.push(''); return; }
-      let remaining = line;
-      while (remaining.length > width) {
-        let cut = remaining.lastIndexOf(' ', width);
-        if (cut < 25) cut = width;
-        lines.push(remaining.slice(0, cut));
-        remaining = remaining.slice(cut).trimStart();
-      }
-      lines.push(remaining);
-    });
-  };
-  lines.push('AXIS BANK | ApMoSys TECHNOLOGIES');
-  lines.push('AI-Assisted Incident Root Cause Analysis');
-  lines.push(`Problem ID: ${problemId}`);
-  lines.push(`Generated: ${new Date().toLocaleString()}`);
-  lines.push('');
-  lines.push(`Status: ${asText(problem['event.status']) || '—'}    Severity: Level ${asText(problem['event.severity']) || '—'}`);
-  lines.push(`Category: ${asText(problem['event.category']) || '—'}`);
-  lines.push(`Incident: ${asText(problem['event.name']) || '—'}`);
-  lines.push(`Started: ${asText(problem['event.start']) || '—'}`);
-  lines.push(`Ended: ${asText(problem['event.end']) || '—'}`);
-  lines.push(`Root cause: ${asText(problem['root_cause.smartscape_entity']) || asText(problem.root_cause_entity_id) || 'Not identified'}`);
-  lines.push(`Affected users: ${asText(problem['dt.davis.affected_users_count']) || 'Not available'}`);
-  lines.push('');
-  lines.push('AI ROOT CAUSE ANALYSIS');
-  addWrapped(answer);
-  lines.push('');
-  lines.push('PAST OCCURRENCES');
-  if (!history.length) lines.push('No matching past occurrences found.');
-  history.slice(0, 20).forEach(x => addWrapped(`${asText(x.display_id)} | ${asText(x['event.start'])} | ${asText(x['event.status'])} | Root cause: ${asText(x['root_cause.smartscape_entity']) || '—'}`));
-  lines.push('');
-  addWrapped('RCA governance: Dynatrace evidence is separated from AI inference. Recommendations are proposed actions and must be validated by the responsible SRE/application team.');
-
-  const perPage = 48;
-  const pages: string[][] = [];
-  for (let i = 0; i < lines.length; i += perPage) pages.push(lines.slice(i, i + perPage));
-  if (!pages.length) pages.push([]);
-
-  const objects: string[] = [];
-  objects.push('<< /Type /Catalog /Pages 2 0 R >>');
-  const kids: string[] = [];
-  const pageObjects: Array<{ page: number; content: number }> = [];
-  let next = 3;
-  pages.forEach(() => { pageObjects.push({ page: next, content: next + 1 }); kids.push(`${next} 0 R`); next += 2; });
-  objects.push(`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages.length} >>`);
-  pages.forEach((pageLines, idx) => {
-    const pageNo = pageObjects[idx].page;
-    const contentNo = pageObjects[idx].content;
-    const commands: string[] = ['BT', '/F1 9 Tf', '40 755 Td', '12 TL'];
-    pageLines.forEach((line, lineIndex) => {
-      const size = lineIndex === 1 ? 15 : lineIndex === 0 ? 10 : 9;
-      if (lineIndex > 0) commands.push('0 -12 Td');
-      commands.push(`/F${lineIndex === 0 || lineIndex === 1 ? 2 : 1} ${size} Tf (${pdfEscape(line)}) Tj`);
-    });
-    commands.push('ET');
-    const stream = commands.join('\n');
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${next} 0 R /F2 ${next + 1} 0 R >> >> /Contents ${contentNo} 0 R >>`);
-    objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
-  });
-  const font1 = next;
-  const font2 = next + 1;
-  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
-  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
-
-  let pdf = '%PDF-1.4\n';
-  const offsets: number[] = [0];
-  objects.forEach((obj, i) => { offsets.push(pdf.length); pdf += `${i + 1} 0 obj\n${obj}\nendobj\n`; });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  pdf += offsets.slice(1).map(x => `${String(x).padStart(10, '0')} 00000 n \n`).join('');
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-
-  const blob = new Blob([pdf], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Axis-RCA-${problemId}.pdf`;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-async function analyze(problemId: string, status: HTMLElement, body: HTMLElement, pdf: HTMLButtonElement) {
-  const id = dqlEscape(problemId);
-  status.textContent = `Collecting ${problemId}: Davis problem and recurrence evidence…`;
-  body.innerHTML = '';
-  pdf.disabled = true;
-
-  const problems = await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and display_id == "${id}"\n| fields display_id,event.id,event.name,event.status,event.severity,event.category,event.start,event.end,event.description,dt.davis.event_ids,dt.davis.impact_level,dt.davis.affected_users_count,root_cause_entity_id,root_cause.smartscape_entity,affected_entity_ids\n| limit 1`, 5);
-  if (!problems.length) throw new Error(`Problem ${problemId} was not found in the last 365 days.`);
-
-  const problem = problems[0];
-  const name = asText(problem['event.name']);
-  const history = name ? await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity\n| sort event.start desc\n| limit 30`, 30).catch(() => []) : [];
-
-  const evidence = JSON.stringify({ problem: {
-    id: asText(problem.display_id), title: name, status: asText(problem['event.status']), severity: asText(problem['event.severity']),
-    category: asText(problem['event.category']), start: asText(problem['event.start']), end: asText(problem['event.end']),
-    description: asText(problem['event.description']), rootCause: asText(problem['root_cause.smartscape_entity']) || asText(problem.root_cause_entity_id),
-    impact: asText(problem['dt.davis.impact_level']), affectedUsers: asText(problem['dt.davis.affected_users_count'])
-  }, pastOccurrences: history }).slice(0, 12000);
-
-  status.textContent = `Evidence collected (${history.length} matching occurrences). Asking Dynatrace Assist…`;
-  const prompt = `You are the senior Dynatrace SRE RCA analyst for the Axis Davis Capacity Planner. Analyze the supplied Davis Problem evidence and produce a concise customer-ready RCA. Use only supplied facts. Clearly distinguish proven root cause from inference. If root cause is not proven, say Not proven by available evidence. Include: Executive Summary, Incident Overview, Root Cause Assessment, Technical Root-Cause Chain, Past Occurrences & Recurrence Pattern, Immediate Remediation Plan, Permanent / Preventive Actions, Monitoring & Alerting Recommendations, Validation Checklist, RCA Confidence & Evidence Gaps.\n\nDYNATRACE EVIDENCE:\n${evidence}`;
-  const args = { body: { text: prompt, context: [
-    { type: 'document-retrieval', value: 'disabled' },
-    { type: 'supplementary', value: evidence },
-    { type: 'instruction', value: 'Treat supplementary context as authoritative incident evidence. Do not claim lack of access.' }
-  ] } } as ConversationArgs;
-  const response = await publicClient.recommenderConversation(args);
-  const answer = extractAssistText(response) || asText(response);
-  if (!answer) throw new Error('Dynatrace Assist returned an empty response.');
-
-  body.innerHTML = `<div class="rca60-grid"><div class="rca60-card"><span>Problem</span><strong>${esc(problemId)}</strong></div><div class="rca60-card"><span>Status</span><strong>${esc(asText(problem['event.status']) || '—')}</strong></div><div class="rca60-card"><span>Severity</span><strong>Level ${esc(asText(problem['event.severity']) || '—')}</strong></div><div class="rca60-card"><span>Category</span><strong>${esc(asText(problem['event.category']) || '—')}</strong></div><div class="rca60-card"><span>Past occurrences</span><strong>${history.length}</strong></div></div><div class="rca60-analysis">${esc(answer)}</div>`;
-  pdf.disabled = false;
-  pdf.textContent = 'Download RCA PDF';
-  pdf.onclick = () => {
-    try { createRcaPdf(problem, problemId, answer, history); status.textContent = `RCA PDF downloaded for ${problemId}.`; }
-    catch (error) { status.textContent = `PDF generation failed: ${error instanceof Error ? error.message : String(error)}`; }
-  };
-  status.textContent = 'RCA generated successfully by the V63 recovery handler.';
-}
-
-export function installRcaButtonRecoveryV63() {
-  const bind = () => {
-    const root = document.getElementById(PANEL_ID);
-    if (!root) return;
-    const run = root.querySelector<HTMLButtonElement>('.rca60-run');
-    const input = root.querySelector<HTMLInputElement>('.rca60-id');
-    const status = root.querySelector<HTMLElement>('.rca60-status');
-    const body = root.querySelector<HTMLElement>('.rca60-body');
-    const pdf = root.querySelector<HTMLButtonElement>('.rca60-pdf');
-    if (!run || !input || !status || !body || !pdf || run.getAttribute(MARK) === 'true') return;
-    run.setAttribute(MARK, 'true');
-    run.onclick = async () => {
-      const id = input.value.trim().toUpperCase();
-      if (!/^P-[A-Z0-9]+$/i.test(id)) { status.textContent = 'Enter a valid Davis Problem ID.'; input.focus(); return; }
-      run.disabled = true;
-      try { await analyze(id, status, body, pdf); }
-      catch (error) { body.innerHTML = `<div class="rca60-error">${esc(error instanceof Error ? error.message : String(error))}</div>`; status.textContent = 'RCA generation failed.'; pdf.disabled = true; }
-      finally { run.disabled = false; }
-    };
-    input.addEventListener('keydown', event => { if (event.key === 'Enter') run.click(); });
-  };
-  bind();
-  const observer = new MutationObserver(bind);
-  observer.observe(document.body, { childList: true, subtree: true });
-  window.setTimeout(bind, 250);
-  window.setTimeout(bind, 1000);
-}
+async function analyze(problemId:string,status:HTMLElement,body:HTMLElement,pdf:HTMLButtonElement){const id=dqlEscape(problemId);status.textContent=`Collecting ${problemId}: Davis problem and recurrence evidence...`;body.innerHTML='';pdf.disabled=true;const problems=await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and display_id == \"${id}\"\n| fields display_id,event.id,event.name,event.status,event.severity,event.category,event.start,event.end,event.description,event.status,dt.davis.impact_level,dt.davis.affected_users_count,root_cause_entity_id,root_cause.smartscape_entity,affected_entity_ids`,5);if(!problems.length)throw new Error(`Problem ${problemId} was not found in the last 365 days.`);const problem=problems[0],name=asText(problem['event.name']);const history=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == \"${dqlEscape(name)}\"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity\n| sort event.start desc\n| limit 30`,30).catch(()=>[]):Row[]:[];const evidence=JSON.stringify({problem:{id:asText(problem.display_id),title:name,status:asText(problem['event.status']),severity:asText(problem['event.severity']),category:asText(problem['event.category']),start:asText(problem['event.start']),end:asText(problem['event.end']),description:asText(problem['event.description']),rootCause:asText(problem['root_cause.smartscape_entity'])||asText(problem.root_cause_entity_id),impact:asText(problem['dt.davis.impact_level']),affectedUsers:asText(problem['dt.davis.affected_users_count'])},pastOccurrences:history}).slice(0,12000);status.textContent=`Evidence collected (${history.length} matching occurrences). Asking Dynatrace Assist...`;const prompt=`You are the senior Dynatrace SRE RCA analyst for the Axis Davis Capacity Planner. Analyze the supplied Davis Problem evidence and produce a customer-ready RCA. Use only supplied facts. Clearly distinguish proven root cause from inference. If root cause is not proven, say Not proven by available evidence. Include: Executive Summary, Incident Overview, Root Cause Assessment, Technical Root-Cause Chain, Past Occurrences & Recurrence Pattern, Immediate Remediation Plan, Permanent / Preventive Actions, Monitoring & Alerting Recommendations, Validation Checklist, RCA Confidence & Evidence Gaps.\n\nDYNATRACE EVIDENCE:\n${evidence}`;const args={body:{text:prompt,context:[{type:'document-retrieval',value:'disabled'},{type:'supplementary',value:evidence},{type:'instruction',value:'Treat supplementary context as authoritative incident evidence. Do not claim lack of access.'}]}} as ConversationArgs;const response=await publicClient.recommenderConversation(args);const answer=extractAssistText(response)||asText(response);if(!answer)throw new Error('Dynatrace Assist returned an empty response.');body.innerHTML=`<div class="rca60-grid"><div class="rca60-card"><span>Problem</span><strong>${esc(problemId)}</strong></div><div class="rca60-card"><span>Status</span><strong>${esc(asText(problem['event.status'])||'-')}</strong></div><div class="rca60-card"><span>Severity</span><strong>Level ${esc(asText(problem['event.severity'])||'-')}</strong></div><div class="rca60-card"><span>Category</span><strong>${esc(asText(problem['event.category'])||'-')}</strong></div><div class="rca60-card"><span>Past occurrences</span><strong>${history.length}</strong></div></div><div class="rca60-analysis">${esc(answer)}</div>`;pdf.disabled=false;pdf.textContent='Download RCA PDF';pdf.onclick=()=>{try{createRcaPdf(problem,problemId,answer,history);status.textContent=`CIO-ready RCA PDF downloaded for ${problemId}.`;}catch(error){status.textContent=`PDF generation failed: ${error instanceof Error?error.message:String(error)}`;}};status.textContent='RCA generated successfully by the V63 recovery handler.';}
+export function installRcaButtonRecoveryV63(){const bind=()=>{const root=document.getElementById(PANEL_ID);if(!root)return;const run=root.querySelector<HTMLButtonElement>('.rca60-run');const input=root.querySelector<HTMLInputElement>('.rca60-id');const status=root.querySelector<HTMLElement>('.rca60-status');const body=root.querySelector<HTMLElement>('.rca60-body');const pdf=root.querySelector<HTMLButtonElement>('.rca60-pdf');if(!run||!input||!status||!body||!pdf||run.getAttribute(MARK)==='true')return;run.setAttribute(MARK,'true');run.onclick=async()=>{const id=input.value.trim().toUpperCase();if(!/^P-[A-Z0-9]+$/i.test(id)){status.textContent='Enter a valid Davis Problem ID.';input.focus();return;}run.disabled=true;try{await analyze(id,status,body,pdf);}catch(error){body.innerHTML=`<div class="rca60-error">${esc(error instanceof Error?error.message:String(error))}</div>`;status.textContent='RCA generation failed.';pdf.disabled=true;}finally{run.disabled=false;}};input.addEventListener('keydown',event=>{if(event.key==='Enter')run.click();});};bind();const observer=new MutationObserver(bind);observer.observe(document.body,{childList:true,subtree:true});window.setTimeout(bind,250);window.setTimeout(bind,1000);}
