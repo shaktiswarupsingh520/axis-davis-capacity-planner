@@ -17,6 +17,7 @@ import { installDynatraceAlertDumpV54 } from './dynatraceAlertDumpV54';
 import { installRcaWorkbenchV60 } from './rcaWorkbenchV60';
 import { installRcaAssistPayloadGuardV60 } from './rcaAssistPayloadGuardV60';
 import { installRcaButtonRecoveryV62 } from './rcaButtonRecoveryV62';
+import { installRcaPdfV64 } from './rcaPdfV64';
 import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
@@ -38,6 +39,7 @@ export default function EnhancedApp() {
     installRcaAssistPayloadGuardV60();
     installRcaWorkbenchV60();
     installRcaButtonRecoveryV62();
+    installRcaPdfV64();
   }, []);
   return <RealAppV2 />;
 }
