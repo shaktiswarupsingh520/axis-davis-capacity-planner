@@ -14,7 +14,7 @@ import { installInteractiveCapacityAiV47 } from './interactiveCapacityAiV47';
 import { installSimulationMemoryFixV50 } from './simulationMemoryFixV50';
 import { installOverviewRiskCardsV51 } from './overviewRiskCardsV51';
 import { installDynatraceAlertDumpV54 } from './dynatraceAlertDumpV54';
-import { installAiRootCauseRcaV1 } from './aiRootCauseRcaV1';
+import { installAiRootCauseRcaV2 } from './aiRootCauseRcaV2';
 import './interactiveCapacityAiV47.css';
 
 export default function EnhancedApp() {
@@ -33,7 +33,7 @@ export default function EnhancedApp() {
     installSimulationMemoryFixV50();
     installOverviewRiskCardsV51();
     installDynatraceAlertDumpV54();
-    installAiRootCauseRcaV1();
+    installAiRootCauseRcaV2();
   }, []);
   return <RealAppV2 />;
 }
