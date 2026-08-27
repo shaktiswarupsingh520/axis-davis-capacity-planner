@@ -178,7 +178,6 @@ Make the answer concise enough for an RCA document but technically detailed enou
 Problem ID: ${problemId}`;
 
   const response = await publicClient.recommenderConversation({
-    acceptType: 'application/json',
     body: {
       text: prompt,
       context: [
@@ -256,4 +255,61 @@ function makePdf(result: RcaResult) {
   const url = URL.createObjectURL(new Blob([out], { type: 'application/pdf' }));
   const a = document.createElement('a'); a.href = url; a.download = `Axis-RCA-${result.problemId}.pdf`; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function installStyles() {
+  if (document.getElementById(`${ID}-style`)) return;
+  const style = document.createElement('style');
+  style.id = `${ID}-style`;
+  style.textContent = `#${ID}{margin:22px 0;border:1px solid #dbe3ec;border-radius:14px;background:#fff;box-shadow:0 8px 30px rgba(20,45,75,.08);overflow:hidden;font-family:Inter,system-ui,sans-serif;color:#172334}.rca-head{padding:20px 24px 14px;background:linear-gradient(135deg,#eef7ff,#fff)}.rca-eyebrow{font-size:10px;font-weight:800;letter-spacing:.14em;color:#1476d4}.rca-head h2{margin:5px 0;font-size:23px}.rca-head p{margin:0;color:#65758a;font-size:12px}.rca-controls{display:flex;gap:10px;align-items:end;padding:15px 24px;border-top:1px solid #e2e8ef;border-bottom:1px solid #e2e8ef;background:#f7f9fb}.rca-controls label{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:700;color:#53657a}.rca-controls input{height:38px;width:250px;border:1px solid #cbd6e1;border-radius:7px;padding:0 11px}.rca-run,.rca-pdf{height:38px;border-radius:7px;padding:0 16px;font-weight:800;cursor:pointer}.rca-run{background:#174a7e;color:#fff;border:0}.rca-pdf{background:#fff;color:#174a7e;border:1px solid #b9c8d8}.rca-run:disabled,.rca-pdf:disabled{opacity:.45;cursor:not-allowed}.rca-status{padding:9px 24px;font-size:11px;color:#63758a}.rca-body{padding:0 24px 22px;max-height:680px;overflow:auto}.rca-summary{display:grid;grid-template-columns:repeat(6,minmax(100px,1fr));gap:8px;margin:10px 0 18px}.rca-card{padding:10px 12px;border:1px solid #e0e7ee;border-radius:8px;background:#f9fbfd}.rca-card span{display:block;font-size:9px;color:#718197;text-transform:uppercase}.rca-card strong{display:block;margin-top:3px;font-size:13px}.rca-analysis{white-space:pre-wrap;font-size:12px;line-height:1.55;color:#24364a}.rca-evidence{margin-top:18px;padding-top:15px;border-top:1px solid #e3e8ee}.rca-evidence h3{font-size:12px;margin:0 0 8px}.rca-table{width:100%;border-collapse:collapse;font-size:10px}.rca-table th,.rca-table td{text-align:left;padding:7px;border-bottom:1px solid #e9edf2;vertical-align:top}.rca-table th{background:#f3f6f9;color:#516276}.rca-error{margin:10px 24px;padding:10px 12px;background:#fff2f1;color:#a52b20;border-radius:7px;font-size:11px}`;
+  document.head.appendChild(style);
+}
+
+export function installAiRootCauseRcaV1() {
+  if (document.getElementById(ID)) return;
+  installStyles();
+  const root = document.createElement('section');
+  root.id = ID;
+  root.innerHTML = `<div class="rca-head"><span class="rca-eyebrow">DYNATRACE ASSIST + DAVIS</span><h2>AI Root Cause & RCA</h2><p>Enter a Davis Problem ID to generate an evidence-backed incident RCA with timeline, recurrence analysis, impact and remediation recommendations.</p></div><div class="rca-controls"><label>Problem ID<input class="rca-id" placeholder="e.g. P-260838152" /></label><button class="rca-run">Analyze with Assist</button><button class="rca-pdf" disabled>Print RCA PDF</button></div><div class="rca-status">Ready for a Davis Problem ID.</div><div class="rca-body"></div>`;
+  const mount = () => {
+    if (document.getElementById(ID)) return;
+    const overview = [...document.querySelectorAll('h1')].find((h) => h.textContent?.includes('Capacity at a glance'))?.closest('.content');
+    if (overview) overview.parentElement?.insertBefore(root, overview.nextSibling);
+  };
+  mount();
+  const observer = new MutationObserver(mount);
+  observer.observe(document.body, { childList: true, subtree: true });
+  const input = root.querySelector<HTMLInputElement>('.rca-id')!;
+  const run = root.querySelector<HTMLButtonElement>('.rca-run')!;
+  const pdfButton = root.querySelector<HTMLButtonElement>('.rca-pdf')!;
+  const status = root.querySelector<HTMLElement>('.rca-status')!;
+  const body = root.querySelector<HTMLElement>('.rca-body')!;
+  let last: RcaResult | null = null;
+  const render = (result: RcaResult) => {
+    const p = result.evidence.problem;
+    const affected = result.evidence.affectedEntities.map((r) => `<tr><td>${esc(text(r.affected_entity_ids))}</td><td>${esc(text(r.entityName))}</td></tr>`).join('');
+    const history = result.evidence.historical.slice(0, 12).map((r) => `<tr><td>${esc(text(r.display_id))}</td><td>${esc(formatDate(text(r['event.start'])))}</td><td>${esc(text(r['event.status']))}</td><td>${esc(duration(text(r['event.start']), text(r['event.end'])))}</td></tr>`).join('');
+    body.innerHTML = `<div class="rca-summary"><div class="rca-card"><span>Problem</span><strong>${esc(result.problemId)}</strong></div><div class="rca-card"><span>Status</span><strong>${esc(text(p['event.status']))}</strong></div><div class="rca-card"><span>Severity</span><strong>Level ${esc(text(p['event.severity']))}</strong></div><div class="rca-card"><span>Category</span><strong>${esc(text(p['event.category']) || '—')}</strong></div><div class="rca-card"><span>Duration</span><strong>${esc(duration(text(p['event.start']), text(p['event.end'])))}</strong></div><div class="rca-card"><span>Past occurrences</span><strong>${result.evidence.historical.length}</strong></div></div><div class="rca-analysis">${esc(result.analysis)}</div><div class="rca-evidence"><h3>Affected entities</h3><table class="rca-table"><thead><tr><th>Entity ID</th><th>Name</th></tr></thead><tbody>${affected || '<tr><td colspan="2">No entity names resolved.</td></tr>'}</tbody></table><h3 style="margin-top:18px">Recent same-type occurrences</h3><table class="rca-table"><thead><tr><th>Problem</th><th>Start</th><th>Status</th><th>Duration</th></tr></thead><tbody>${history || '<tr><td colspan="4">No historical occurrences found.</td></tr>'}</tbody></table></div>`;
+  };
+  const analyze = async () => {
+    const problemId = input.value.trim().toUpperCase();
+    if (!/^P-[A-Z0-9]+$/i.test(problemId)) { status.textContent = 'Enter a valid Davis Problem ID such as P-260838152.'; return; }
+    run.disabled = true; pdfButton.disabled = true; body.innerHTML = '';
+    status.textContent = `Collecting ${problemId}: problem details, timeline, affected entities and 365-day recurrence evidence…`;
+    try {
+      const evidence = await loadEvidence(problemId);
+      status.textContent = 'Evidence collected. Asking Dynatrace Assist for the RCA…';
+      const analysis = await askAssist(problemId, evidence);
+      last = { problemId, evidence, analysis, generatedAt: new Date().toISOString() };
+      render(last); pdfButton.disabled = false;
+      status.textContent = `RCA generated with Dynatrace Assist · ${new Date().toLocaleTimeString()}`;
+    } catch (error) {
+      last = null;
+      body.innerHTML = `<div class="rca-error">${esc(error instanceof Error ? error.message : String(error))}</div>`;
+      status.textContent = 'RCA generation failed.';
+    } finally { run.disabled = false; }
+  };
+  run.onclick = () => void analyze();
+  input.addEventListener('keydown', (event) => { if (event.key === 'Enter') void analyze(); });
+  pdfButton.onclick = () => { if (last) makePdf(last); };
 }
