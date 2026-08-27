@@ -4,7 +4,7 @@ const isRcaButton = (el: Element | null) => !!el && /RCA analysis with Davis/i.t
 export function installRcaDisplayFixV60() {
   window.addEventListener('click', (event) => {
     const target = event.target as HTMLElement | null;
-    const button = target?.closest('.axis-usecase-btn');
+    const button: Element | null = target ? target.closest('.axis-usecase-btn') : null;
     if (!isRcaButton(button)) return;
     const panel = document.getElementById(PANEL_ID) as HTMLElement | null;
     if (panel) panel.style.display = 'block';
