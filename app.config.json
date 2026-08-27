@@ -2,7 +2,7 @@
   "environmentUrl": "https://axis-prod.apps.dynatrace.com/",
   "app": {
     "name": "Axis Davis Capacity Planner",
-    "version": "1.0.58",
+    "version": "1.0.59",
     "description": "Axis infrastructure capacity planning, forecasting and AI-assisted incident RCA.",
     "id": "my.axis.davis.capacity.planner",
     "scopes": [
@@ -11,6 +11,9 @@
       { "name": "storage:entities:read", "comment": "Read host entities and management zone membership" },
       { "name": "storage:spans:read", "comment": "Read request-root spans for application-service throughput analysis" },
       { "name": "storage:events:read", "comment": "Read Davis problems and event records for interactive capacity questions and RCA" },
+      { "name": "storage:logs:read", "comment": "Read incident logs for RCA evidence around the problem window" },
+      { "name": "storage:smartscape:read", "comment": "Allow RCA investigations to use Smartscape topology evidence" },
+      { "name": "storage:system:read", "comment": "Allow Dynatrace Assist agentic system context when available" },
       { "name": "davis:analyzers:read", "comment": "Read Dynatrace Intelligence analyzer definitions" },
       { "name": "davis:analyzers:execute", "comment": "Execute Dynatrace Intelligence problem analysis and forecast analyzers" },
       { "name": "davis-copilot:conversations:execute", "comment": "Generate AI-assisted capacity responses and incident RCA using Dynatrace Assist" },
@@ -21,6 +24,7 @@
       { "name": "document:documents:write", "comment": "Persist agentic conversation documents when enabled" },
       { "name": "document:documents:delete", "comment": "Manage persisted agentic conversation documents" },
       { "name": "hub:catalog:read", "comment": "Allow capability discovery" },
+      { "name": "ai:operator:execute", "comment": "Allow Dynatrace Intelligence agentic AI operations" },
       { "name": "mcp-gateway:servers:read", "comment": "Discover permitted Dynatrace MCP tools" },
       { "name": "mcp-gateway:servers:invoke", "comment": "Invoke permitted Dynatrace MCP tools" }
     ]
