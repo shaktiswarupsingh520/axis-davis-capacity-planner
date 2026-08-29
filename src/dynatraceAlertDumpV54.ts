@@ -99,6 +99,16 @@ function buildProblemQuery(range: string, status: string, severity: string, zone
   return `${query} | sort event.start desc | limit 1000`;
 }
 
+function problemType(row: ProblemRecord): string {
+  const category = text(row['event.category']).toUpperCase();
+  const title = text(row['event.name']).toUpperCase();
+  const entities = text(row.affected_entity_names || row.affected_entity_ids).toUpperCase();
+  if (category === 'CUSTOM' || title.includes('CUSTOM')) return 'Custom';
+  if (entities.includes('SERVICE') || title.includes('SERVICE')) return 'Service';
+  if (entities.includes('APPLICATION') || entities.includes('WEB_APPLICATION') || title.includes('APPLICATION')) return 'Application';
+  return 'Infrastructure';
+}
+
 function severityLabel(value: unknown) {
   const n = Number(value); return Number.isFinite(n) ? `Level ${n}` : text(value) || '—';
 }
@@ -109,7 +119,8 @@ function createModal() {
 <header class="alert-dump-header"><div><span class="alert-dump-eyebrow">LIVE DYNATRACE</span><h2>Dynatrace Alert Dump</h2><p>Download Davis Problem records for investigation, reporting and RCA.</p></div><button class="alert-dump-close" aria-label="Close">×</button></header>
 <div class="alert-dump-controls"><label>Time range<select class="alert-dump-range"><option value="1h">Last 1 hour</option><option value="6h">Last 6 hours</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
 <label>Status<select class="alert-dump-status"><option value="ALL">All</option><option value="ACTIVE">Active</option><option value="CLOSED">Closed</option></select></label>
-<label>Severity<select class="alert-dump-severity"><option value="ALL">All severities</option><option value="1">Level 1 — Critical</option><option value="2">Level 2</option><option value="3">Level 3</option><option value="4">Level 4</option><option value="5">Level 5 — Info</option></select></label><button class="alert-dump-load">Load problems</button></div>
+<label>Severity<select class="alert-dump-severity"><option value="ALL">All severities</option><option value="1">Level 1 — Critical</option><option value="2">Level 2</option><option value="3">Level 3</option><option value="4">Level 4</option><option value="5">Level 5 — Info</option></select></label>
+<label>Category<select class="alert-dump-category"><option value="ALL">All categories</option><option value="INFRASTRUCTURE">Infrastructure</option><option value="SERVICE">Service</option><option value="APPLICATION">Application</option><option value="CUSTOM">Custom</option></select></label><button class="alert-dump-load">Load problems</button></div>
 <div class="alert-dump-scope"><span>Scope: <strong class="alert-dump-zone">All Management Zones</strong></span><span class="alert-dump-count">0 problems</span></div><div class="alert-dump-message"></div>
 <div class="alert-dump-table-wrap"><table class="alert-dump-table"><thead><tr><th>Problem ID</th><th>Title</th><th>Status</th><th>Severity</th><th>Category</th><th>Started</th><th>Duration</th><th>Affected entities</th></tr></thead><tbody><tr><td colspan="8" class="alert-dump-empty">Loading live Davis problems…</td></tr></tbody></table></div>
 <footer class="alert-dump-footer"><span>Up to 1,000 unique problems · duplicates excluded</span><div><button class="alert-dump-csv" disabled>Download CSV</button><button class="alert-dump-xls" disabled>Download Excel</button></div></footer></section>`;
@@ -146,8 +157,11 @@ function openAlertDump() {
     loadButton.disabled = true; loadButton.textContent = 'Loading…'; setMessage(''); tbody.innerHTML = '<tr><td colspan="8" class="alert-dump-empty">Reading Davis problems from Grail…</td></tr>';
     try {
       const selectedZone = readTopbarValue(0, 'All Management Zones');
+      const category = modal.querySelector<HTMLSelectElement>('.alert-dump-category')!.value;
       const query = buildProblemQuery(rangeSelect.value, modal.querySelector<HTMLSelectElement>('.alert-dump-status')!.value, modal.querySelector<HTMLSelectElement>('.alert-dump-severity')!.value, selectedZone);
-      rows = await executeDql(query); render();
+      const fetchedRows = await executeDql(query);
+      rows = category === 'ALL' ? fetchedRows : fetchedRows.filter(row => problemType(row).toUpperCase() === category);
+      render();
     } catch (error) { rows = []; render(); setMessage(error instanceof Error ? error.message : 'Unable to load Dynatrace problems.'); }
     finally { loadButton.disabled = false; loadButton.textContent = 'Load problems'; }
   };
