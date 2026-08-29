@@ -25,6 +25,7 @@ const safe=(s:string)=>s.replace(/[\u2018\u2019\u201c\u201d\u2013\u2014\u2022\u2
 const fmtDate=(v:unknown)=>{const s=asText(v);if(!s)return '-';const d=new Date(s);return Number.isNaN(d.getTime())?s:d.toLocaleString('en-IN',{year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'UTC'})+' UTC';};
 const durationMinutes=(a:unknown,b:unknown)=>{const x=new Date(asText(a)).getTime(),y=new Date(asText(b)).getTime();return Number.isFinite(x)&&Number.isFinite(y)&&y>=x?(y-x)/60000:null;};
 const statusColor=(s:string):RGB=>/active|open/i.test(s)?C.red:/closed|resolved/i.test(s)?C.green:C.amber;
+const lighten=(rgb:RGB,amount:number):RGB=>[Math.min(255,rgb[0]+amount),Math.min(255,rgb[1]+amount),Math.min(255,rgb[2]+amount)];
 
 async function runDql(query:string,max=100):Promise<Row[]>{
   const started=await queryExecutionClient.queryExecute({body:{query,requestTimeoutMilliseconds:30000,maxResultRecords:max}});
@@ -51,7 +52,7 @@ function extractAssistText(value:unknown):string{
   return(Array.isArray(v.tokens)?v.tokens.map(asText).join(''):'').trim();
 }
 
-function text(doc:jsPDF,s:string,x:number,y:number,size=9,bold=false,color:C= C.ink){doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);doc.setTextColor(...color);doc.text(safe(s),x,y);}
+function text(doc:jsPDF,s:string,x:number,y:number,size=9,bold=false,color:RGB=C.ink){doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);doc.setTextColor(...color);doc.text(safe(s),x,y);}
 function wrap(doc:jsPDF,s:string,x:number,y:number,w:number,size=9,lead=13){doc.setFont('helvetica','normal');doc.setFontSize(size);doc.setTextColor(...C.ink);const lines=doc.splitTextToSize(safe(s),w) as string[];doc.text(lines,x,y);return y+lines.length*lead;}
 function rect(doc:jsPDF,x:number,y:number,w:number,h:number,fill:RGB=C.white,border:RGB=C.border,r=5){doc.setFillColor(...fill);doc.setDrawColor(...border);doc.roundedRect(x,y,w,h,r,r,'FD');}
 function pageHeader(doc:jsPDF,title:string,kicker:string,page:number,total:number){doc.setFillColor(...C.navy);doc.rect(0,0,W,62,'F');text(doc,'AXIS BANK  |  ApMoSys TECHNOLOGIES',M,20,8,true,C.white);text(doc,title,M,43,18,true,C.white);text(doc,kicker,W-M,20,7,false,[218,226,240]);text(doc,`${page} / ${total}`,W-M,43,8,true,C.white);}
@@ -62,7 +63,7 @@ function table(doc:jsPDF,x:number,y:number,widths:number[],headers:string[],rows
 function bullet(doc:jsPDF,s:string,x:number,y:number,w:number,accent:RGB=C.blue){doc.setFillColor(...accent);doc.circle(x+3,y-3,2,'F');return wrap(doc,s,x+11,y,w-11,8.3,11)+3;}
 function parseRca(answer:string){const blocks:{heading:string,body:string[]}[]=[];let current:{heading:string,body:string[]}|null=null;for(const raw of answer.split(/\r?\n/)){const line=raw.trim();if(!line)continue;const h=line.match(/^#{1,4}\s*(.+)$/);if(h){current={heading:safe(h[1]).replace(/\*\*(.*?)\*\*/g,'$1'),body:[]};blocks.push(current);continue;}if(!current){current={heading:'AI Assessment',body:[]};blocks.push(current);}current.body.push(safe(line.replace(/^[-*]\s+/,'').replace(/^\d+[.)]\s+/,'').replace(/^\[[ xX]\]\s*/,'')).replace(/\*\*(.*?)\*\*/g,'$1').replace(/`([^`]+)`/g,'$1'));}return blocks;}
 
-function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[]){
+function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[],recurrenceCount:number){
   const doc=new jsPDF({unit:'pt',format:'a4',compress:true});
   const generated=new Date();
   const incident=asText(problem['event.name'])||'Dynatrace Davis Incident';
@@ -73,7 +74,7 @@ function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[]){
   const start=asText(problem['event.start']),end=asText(problem['event.end']);
   const mins=durationMinutes(start,end);
   const dur=mins===null?'Not available':mins<1?'<1 min':mins<60?`${mins.toFixed(1)} min`:`${(mins/60).toFixed(1)} hr`;
-  const occ=history.length;
+  const occ=recurrenceCount;
   const active=history.filter(x=>/active|open/i.test(asText(x['event.status']))).length;
   const closed=history.filter(x=>/closed|resolved/i.test(asText(x['event.status']))).length;
   const blocks=parseRca(answer);
@@ -85,17 +86,17 @@ function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[]){
   text(doc,'AI-ASSISTED',M+10,142,9,true,[128,177,255]);text(doc,'INCIDENT ROOT',M+10,171,27,true,C.white);text(doc,'CAUSE ANALYSIS',M+10,203,27,true,C.white);
   text(doc,problemId,M+10,242,13,true,[224,232,247]);y=wrap(doc,incident,M+10,275,450,15,21);doc.setDrawColor(255,255,255);doc.line(M+10,322,W-M,322);
   text(doc,'EXECUTIVE INCIDENT BRIEF',M+10,352,9,true,[128,177,255]);
-  pill(doc,'Status',st,M+10,375,105,statusColor(st).map(v=>Math.min(255,v+50)) as RGB,statusColor(st));
+  pill(doc,'Status',st,M+10,375,105,lighten(statusColor(st),50),statusColor(st));
   pill(doc,'Severity',`Level ${sev}`,M+125,375,105,[238,242,249],C.navy);pill(doc,'Duration',dur,M+240,375,105,[238,242,249],C.navy);pill(doc,'Recurrence',String(occ),M+355,375,105,[238,242,249],C.red);
   y=468;text(doc,'Incident window',M+10,y,7,true,[160,176,202]);y+=20;text(doc,fmtDate(start),M+10,y,10,true,C.white);text(doc,'to',M+210,y,8,false,[160,176,202]);text(doc,fmtDate(end),M+235,y,10,true,C.white);
   y+=44;text(doc,'Root-cause entity',M+10,y,7,true,[160,176,202]);y+=19;wrap(doc,root,M+10,y,470,10,14);
   text(doc,'Prepared by Axis Davis Capacity Planner',M+10,H-72,8,false,[160,176,202]);text(doc,`Generated ${generated.toLocaleString('en-IN')}`,M+10,H-52,8,false,[160,176,202]);text(doc,'CONFIDENTIAL',W-M,H-52,8,true,[160,176,202]);
 
   doc.addPage();pageHeader(doc,'Executive Decision View','Leadership summary',2,totalPages);y=92;y=section(doc,'Incident at a glance',y,'What leadership needs to know');
-  pill(doc,'Problem ID',problemId,M,y,120,C.softBlue,C.blue);pill(doc,'Status',st,M+130,y,100,statusColor(st).map(v=>Math.min(255,v+55)) as RGB,statusColor(st));pill(doc,'Severity',`Level ${sev}`,M+240,y,105,C.softAmber,C.amber);pill(doc,'Category',cat,M+355,y,105,C.pale,C.navy);y+=65;
+  pill(doc,'Problem ID',problemId,M,y,120,C.softBlue,C.blue);pill(doc,'Status',st,M+130,y,100,lighten(statusColor(st),55),statusColor(st));pill(doc,'Severity',`Level ${sev}`,M+240,y,105,C.softAmber,C.amber);pill(doc,'Category',cat,M+355,y,105,C.pale,C.navy);y+=65;
   rect(doc,M,y,CW,92,C.pale,C.border,7);text(doc,'PRIMARY FINDING',M+14,y+18,7,true,C.blue);y=wrap(doc,blocks.find(b=>/executive summary|summary/i.test(b.heading))?.body.join(' ')||`Davis identified ${incident} and the RCA was generated from the supplied Dynatrace evidence.`,M+14,y+39,CW-28,10,14)+8;y+=12;
   y=section(doc,'Impact & recurrence',y,'Observed operational risk');
-  table(doc,M,y,[150,150,150],['Indicator','Observed','Leadership interpretation'],[['Incident duration',dur,'Time to recover / contain'],['Past occurrences',String(occ),occ>10?'High recurrence pressure':'Review recurrence trend'],['Active occurrences',String(active),active>0?'Ongoing operational risk':'No active recurrence'],['Closed occurrences',String(closed),'Historical recurrence sample']],21);y+=120;
+  table(doc,M,y,[150,150,150],['Indicator','Observed','Leadership interpretation'],[['Incident duration',dur,'Time to recover / contain'],['Past occurrences',String(occ),occ>10?'High recurrence pressure':'Review recurrence trend'],['Active occurrences in detail sample',String(active),active>0?'Operational risk in latest occurrence sample':'No active occurrence in displayed sample'],['Closed occurrences in detail sample',String(closed),'Latest occurrence detail sample']],21);y+=120;
   y=section(doc,'Incident facts',y);table(doc,M,y,[145,350],['Attribute','Value'],[['Incident',incident],['Root-cause entity',root],['Started',fmtDate(start)],['Ended',fmtDate(end)],['Affected users',asText(problem['dt.davis.affected_users_count'])||'Not available'],['Impact level',asText(problem['dt.davis.impact_level'])||'Not available']],22);footer(doc);
 
   doc.addPage();pageHeader(doc,'Root Cause Assessment','Evidence and causal chain',3,totalPages);y=92;y=section(doc,'Root cause assessment',y,'Evidence-backed interpretation');const rca=blocks.find(b=>/root cause assessment/i.test(b.heading));
@@ -107,8 +108,8 @@ function createRcaPdf(problem:Row,problemId:string,answer:string,history:Row[]){
 
   doc.addPage();pageHeader(doc,'Incident Timeline & Recurrence','Operational history',4,totalPages);y=92;y=section(doc,'Incident timeline',y,'Primary Davis problem window');
   [['Detection / problem start',fmtDate(start),'Davis problem opened'],['Recovery / problem end',fmtDate(end),'Davis problem closed'],['Duration',dur,'Calculated from supplied start/end']].forEach((e,i)=>{const cx=M+20,cy=y+25+i*62;doc.setFillColor(...C.blue);doc.circle(cx,cy,6,'F');if(i<2){doc.setDrawColor(...C.border);doc.line(cx,cy+7,cx,cy+56);}text(doc,e[0],M+42,cy-2,7,true,C.muted);text(doc,e[1],M+42,cy+16,9,true,C.ink);text(doc,e[2],M+280,cy+7,8,false,C.muted);});y+=200;
-  y=section(doc,'Recurrence pattern',y,`${occ} matching occurrence(s) found in the last 365 days`);
-  table(doc,M,y,[90,105,125,130],['Problem ID','Started','Status','Root-cause entity'],history.slice(0,10).map(x=>[asText(x.display_id),fmtDate(x['event.start']),asText(x['event.status'])||'-',asText(x['root_cause.smartscape_entity'])||'-']),21);footer(doc);
+  y=section(doc,'Recurrence pattern',y,`${occ} past matching occurrence(s) found in the last 365 days`);
+  table(doc,M,y,[82,90,118,125,70],['Problem ID','Started','Title','Impacted Entity','Status'],history.slice(0,10).map(x=>[asText(x.display_id)||'-',fmtDate(x['event.start']),asText(x['event.name'])||'-',asText(x['affected_entity_ids'])||'-',asText(x['event.status'])||'-']),21);footer(doc);
 
   doc.addPage();pageHeader(doc,'Remediation & Preventive Actions','Operational response plan',5,totalPages);y=92;y=section(doc,'Immediate stabilization',y,'Actions to contain current operational risk');
   const immediate=blocks.find(b=>/immediate remediation/i.test(b.heading));(immediate?.body||['Validate the current incident state and contain customer impact.','Confirm the root-cause entity and collect supporting telemetry.','Verify service recovery and absence of recurrence.']).slice(0,6).forEach(s=>{y=bullet(doc,s,M,y,CW,C.red);});
@@ -133,14 +134,55 @@ async function analyze(problemId:string,status:HTMLElement,body:HTMLElement,pdf:
   if(!problems.length)throw new Error(`Problem ${problemId} was not found in the last 365 days.`);
   const problem=problems[0];
   const name=asText(problem['event.name']);
-  const history=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity\n| sort event.start desc\n| limit 30`,30).catch(()=>[] as Row[]):[];
-  const evidence=JSON.stringify({problem:{id:asText(problem.display_id),title:name,status:asText(problem['event.status']),severity:asText(problem['event.severity']),category:asText(problem['event.category']),start:asText(problem['event.start']),end:asText(problem['event.end']),description:asText(problem['event.description']),rootCause:asText(problem['root_cause.smartscape_entity'])||asText(problem.root_cause_entity_id),impact:asText(problem['dt.davis.impact_level']),affectedUsers:asText(problem['dt.davis.affected_users_count'])},pastOccurrences:history}).slice(0,12000);
-  status.textContent=`Evidence collected (${history.length} matching occurrences). Asking Dynatrace Assist...`;
+
+  const recurrenceRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity,affected_entity_ids\n| sort event.start desc\n| limit 30`,30).catch(()=>[] as Row[]):[];
+
+  const recurrenceCountRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| summarize recurrence_count=count()`,1).catch(()=>[] as Row[]):[];
+  const recurrenceCount=Number(asText(recurrenceCountRows[0]?.recurrence_count)||0);
+
+  const evidence=JSON.stringify({problem:{id:asText(problem.display_id),title:name,status:asText(problem['event.status']),severity:asText(problem['event.severity']),category:asText(problem['event.category']),start:asText(problem['event.start']),end:asText(problem['event.end']),description:asText(problem['event.description']),rootCause:asText(problem['root_cause.smartscape_entity'])||asText(problem.root_cause_entity_id),impact:asText(problem['dt.davis.impact_level']),affectedUsers:asText(problem['dt.davis.affected_users_count'])},pastOccurrences:recurrenceRows,recurrenceCount}).slice(0,12000);
+  status.textContent=`Evidence collected (${recurrenceCount} past matching occurrences; ${recurrenceRows.length} detail rows loaded). Asking Dynatrace Assist...`;
   const prompt=`You are the senior Dynatrace SRE RCA analyst for the Axis Davis Capacity Planner. Analyze the supplied Davis Problem evidence and produce a customer-ready RCA. Use only supplied facts. Clearly distinguish proven root cause from inference. If root cause is not proven, say Not proven by available evidence. Include: Executive Summary, Incident Overview, Root Cause Assessment, Technical Root-Cause Chain, Past Occurrences & Recurrence Pattern, Immediate Remediation Plan, Permanent / Preventive Actions, Monitoring & Alerting Recommendations, Validation Checklist, RCA Confidence & Evidence Gaps.\n\nDYNATRACE EVIDENCE:\n${evidence}`;
   const args={body:{text:prompt,context:[{type:'document-retrieval',value:'disabled'},{type:'supplementary',value:evidence},{type:'instruction',value:'Treat supplementary context as authoritative incident evidence. Do not claim lack of access.'}]}} as ConversationArgs;
   const response=await publicClient.recommenderConversation(args);const answer=extractAssistText(response)||asText(response);if(!answer)throw new Error('Dynatrace Assist returned an empty response.');
-  body.innerHTML=`<div class="rca60-grid"><div class="rca60-card"><span>Problem</span><strong>${esc(problemId)}</strong></div><div class="rca60-card"><span>Status</span><strong>${esc(asText(problem['event.status'])||'-')}</strong></div><div class="rca60-card"><span>Severity</span><strong>Level ${esc(asText(problem['event.severity'])||'-')}</strong></div><div class="rca60-card"><span>Category</span><strong>${esc(asText(problem['event.category'])||'-')}</strong></div><div class="rca60-card"><span>Past occurrences</span><strong>${history.length}</strong></div></div><div class="rca60-analysis">${esc(answer)}</div>`;
-  pdf.disabled=false;pdf.textContent='Download CIO-ready RCA PDF';pdf.onclick=()=>{try{createRcaPdf(problem,problemId,answer,history);status.textContent=`CIO-ready RCA PDF downloaded for ${problemId}.`;}catch(error){status.textContent=`PDF generation failed: ${error instanceof Error?error.message:String(error)}`;}};
+
+  const occurrenceRows=recurrenceRows.map(x=>`<tr style="border-bottom:1px solid #e3e8ef;">
+    <td style="padding:9px 8px;font-weight:700;color:#2f5bd6;white-space:nowrap;">${esc(asText(x.display_id)||'-')}</td>
+    <td style="padding:9px 8px;white-space:nowrap;">${esc(fmtDate(x['event.start']))}</td>
+    <td style="padding:9px 8px;min-width:220px;">${esc(asText(x['event.name'])||'-')}</td>
+    <td style="padding:9px 8px;word-break:break-word;">${esc(asText(x['affected_entity_ids'])||'-')}</td>
+    <td style="padding:9px 8px;white-space:nowrap;">${esc(asText(x['event.status'])||'-')}</td>
+  </tr>`).join('');
+
+  body.innerHTML=`
+    <div class="rca60-grid">
+      <div class="rca60-card"><span>Problem</span><strong>${esc(problemId)}</strong></div>
+      <div class="rca60-card"><span>Status</span><strong>${esc(asText(problem['event.status'])||'-')}</strong></div>
+      <div class="rca60-card"><span>Severity</span><strong>Level ${esc(asText(problem['event.severity'])||'-')}</strong></div>
+      <div class="rca60-card"><span>Category</span><strong>${esc(asText(problem['event.category'])||'-')}</strong></div>
+      <div class="rca60-card"><span>Past occurrences</span><button type="button" data-rca-occurrences style="margin-top:6px;border:1px solid #c9d7f4;background:#eef4ff;color:#2f5bd6;border-radius:8px;padding:5px 10px;font-size:16px;font-weight:800;cursor:pointer;">${recurrenceCount}</button></div>
+    </div>
+    <div data-rca-occurrence-panel style="display:none;margin-top:14px;border:1px solid #dbe2ec;border-radius:10px;background:#fff;overflow:auto;box-shadow:0 2px 8px rgba(20,35,64,.06);">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#f6f8fc;border-bottom:1px solid #dbe2ec;">
+        <div><div style="font-size:12px;font-weight:800;color:#142340;text-transform:uppercase;letter-spacing:.04em;">Recurrence history</div><div style="font-size:11px;color:#68788f;margin-top:3px;">${recurrenceCount} past occurrence(s) found; latest ${recurrenceRows.length} loaded for detail.</div></div>
+        <button type="button" data-rca-occurrences-close style="border:0;background:transparent;color:#68788f;font-size:18px;cursor:pointer;">&times;</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:850px;">
+        <thead><tr style="background:#142340;color:#fff;text-align:left;">
+          <th style="padding:10px 8px;">Problem ID</th><th style="padding:10px 8px;">Timestamp</th><th style="padding:10px 8px;">Title</th><th style="padding:10px 8px;">Impacted Entity</th><th style="padding:10px 8px;">Status</th>
+        </tr></thead>
+        <tbody>${occurrenceRows||'<tr><td colspan="5" style="padding:18px;text-align:center;color:#68788f;">No past occurrence details were returned.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="rca60-analysis">${esc(answer)}</div>`;
+
+  const occurrenceButton=body.querySelector<HTMLButtonElement>('[data-rca-occurrences]');
+  const occurrencePanel=body.querySelector<HTMLElement>('[data-rca-occurrence-panel]');
+  const occurrenceClose=body.querySelector<HTMLButtonElement>('[data-rca-occurrences-close]');
+  occurrenceButton?.addEventListener('click',()=>{if(occurrencePanel)occurrencePanel.style.display=occurrencePanel.style.display==='none'?'block':'none';});
+  occurrenceClose?.addEventListener('click',()=>{if(occurrencePanel)occurrencePanel.style.display='none';});
+
+  pdf.disabled=false;pdf.textContent='Download CIO-ready RCA PDF';pdf.onclick=()=>{try{createRcaPdf(problem,problemId,answer,recurrenceRows,recurrenceCount);status.textContent=`CIO-ready RCA PDF downloaded for ${problemId}.`;}catch(error){status.textContent=`PDF generation failed: ${error instanceof Error?error.message:String(error)}`;}};
   status.textContent='RCA generated successfully by the V63 recovery handler.';
 }
 
