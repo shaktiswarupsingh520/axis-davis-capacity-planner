@@ -134,18 +134,14 @@ async function analyze(problemId:string,status:HTMLElement,body:HTMLElement,pdf:
   if(!problems.length)throw new Error(`Problem ${problemId} was not found in the last 365 days.`);
   const problem=problems[0];
   const name=asText(problem['event.name']);
-
   const recurrenceRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity,affected_entity_ids\n| sort event.start desc\n| limit 30`,30).catch(()=>[] as Row[]):[];
-
   const recurrenceCountRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| summarize recurrence_count=count()`,1).catch(()=>[] as Row[]):[];
   const recurrenceCount=Number(asText(recurrenceCountRows[0]?.recurrence_count)||0);
-
   const evidence=JSON.stringify({problem:{id:asText(problem.display_id),title:name,status:asText(problem['event.status']),severity:asText(problem['event.severity']),category:asText(problem['event.category']),start:asText(problem['event.start']),end:asText(problem['event.end']),description:asText(problem['event.description']),rootCause:asText(problem['root_cause.smartscape_entity'])||asText(problem.root_cause_entity_id),impact:asText(problem['dt.davis.impact_level']),affectedUsers:asText(problem['dt.davis.affected_users_count'])},pastOccurrences:recurrenceRows,recurrenceCount}).slice(0,12000);
   status.textContent=`Evidence collected (${recurrenceCount} past matching occurrences; ${recurrenceRows.length} detail rows loaded). Asking Dynatrace Assist...`;
-  const prompt=`You are the senior Dynatrace SRE RCA analyst for the Axis Davis Capacity Planner. Analyze the supplied Davis Problem evidence and produce a customer-ready RCA. Use only supplied facts. Clearly distinguish proven root cause from inference. If root cause is not proven, say Not proven by available evidence. Include: Executive Summary, Incident Overview, Root Cause Assessment, Technical Root-Cause Chain, Past Occurrences & Recurrence Pattern, Immediate Remediation Plan, Permanent / Preventive Actions, Monitoring & Alerting Recommendations, Validation Checklist, RCA Confidence & Evidence Gaps.\n\nDYNATRACE EVIDENCE:\n${evidence}`;
+  const prompt=`You are the senior Dynatrace SRE RCA analyst for the Axis Davis Capacity Planner. Analyze the supplied Davis Problem evidence and produce a customer-ready RCA. Use only supplied facts. Clearly distinguish proven root cause from inference. IMPORTANT: recurrenceCount is the authoritative total number of past matching occurrences in the last 365 days; pastOccurrences is only a recent detail sample. Do not use the number of detail rows as the recurrence count. If root cause is not proven, say Not proven by available evidence. Include: Executive Summary, Incident Overview, Root Cause Assessment, Technical Root-Cause Chain, Past Occurrences & Recurrence Pattern, Immediate Remediation Plan, Permanent / Preventive Actions, Monitoring & Alerting Recommendations, Validation Checklist, RCA Confidence & Evidence Gaps.\n\nDYNATRACE EVIDENCE:\n${evidence}`;
   const args={body:{text:prompt,context:[{type:'document-retrieval',value:'disabled'},{type:'supplementary',value:evidence},{type:'instruction',value:'Treat supplementary context as authoritative incident evidence. Do not claim lack of access.'}]}} as ConversationArgs;
   const response=await publicClient.recommenderConversation(args);const answer=extractAssistText(response)||asText(response);if(!answer)throw new Error('Dynatrace Assist returned an empty response.');
-
   const occurrenceRows=recurrenceRows.map(x=>`<tr style="border-bottom:1px solid #e3e8ef;">
     <td style="padding:9px 8px;font-weight:700;color:#2f5bd6;white-space:nowrap;">${esc(asText(x.display_id)||'-')}</td>
     <td style="padding:9px 8px;white-space:nowrap;">${esc(fmtDate(x['event.start']))}</td>
@@ -153,7 +149,6 @@ async function analyze(problemId:string,status:HTMLElement,body:HTMLElement,pdf:
     <td style="padding:9px 8px;word-break:break-word;">${esc(asText(x['affected_entity_ids'])||'-')}</td>
     <td style="padding:9px 8px;white-space:nowrap;">${esc(asText(x['event.status'])||'-')}</td>
   </tr>`).join('');
-
   body.innerHTML=`
     <div class="rca60-grid">
       <div class="rca60-card"><span>Problem</span><strong>${esc(problemId)}</strong></div>
@@ -175,13 +170,11 @@ async function analyze(problemId:string,status:HTMLElement,body:HTMLElement,pdf:
       </table>
     </div>
     <div class="rca60-analysis">${esc(answer)}</div>`;
-
   const occurrenceButton=body.querySelector<HTMLButtonElement>('[data-rca-occurrences]');
   const occurrencePanel=body.querySelector<HTMLElement>('[data-rca-occurrence-panel]');
   const occurrenceClose=body.querySelector<HTMLButtonElement>('[data-rca-occurrences-close]');
   occurrenceButton?.addEventListener('click',()=>{if(occurrencePanel)occurrencePanel.style.display=occurrencePanel.style.display==='none'?'block':'none';});
   occurrenceClose?.addEventListener('click',()=>{if(occurrencePanel)occurrencePanel.style.display='none';});
-
   pdf.disabled=false;pdf.textContent='Download CIO-ready RCA PDF';pdf.onclick=()=>{try{createRcaPdf(problem,problemId,answer,recurrenceRows,recurrenceCount);status.textContent=`CIO-ready RCA PDF downloaded for ${problemId}.`;}catch(error){status.textContent=`PDF generation failed: ${error instanceof Error?error.message:String(error)}`;}};
   status.textContent='RCA generated successfully by the V63 recovery handler.';
 }
