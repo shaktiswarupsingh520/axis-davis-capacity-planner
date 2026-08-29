@@ -1,0 +1,83 @@
+name: Apply RCA scope and alert category fixes
+
+on:
+  push:
+    branches:
+      - release/axis-bank-interactive-ai-1.0.68-work
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch RCA and Alert Dump
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          rca = Path('src/rcaButtonRecoveryV63.ts')
+          s = rca.read_text()
+          old = '''  const name=asText(problem['event.name']);
+  const recurrenceRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity,affected_entity_ids\n| sort event.start desc\n| limit 30`,30).catch(()=>[] as Row[]):[];
+  const recurrenceCountRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"\n| summarize recurrence_count=count()`,1).catch(()=>[] as Row[]):[];
+'''
+          new = '''  const name=asText(problem['event.name']);
+  const selectedZone=Array.from(document.querySelectorAll<HTMLSelectElement>('.top-actions select'))[0]?.value||'All Management Zones';
+  const zoneFilter=selectedZone!=='All Management Zones'?`\n| expand related_entity_names\n| lookup sourceField:related_entity_names, lookupField:entity.name,\n  [\n    fetch dt.entity.host\n    | expand managementZones\n    | filter managementZones == "${dqlEscape(selectedZone)}"\n    | fields entity.name\n  ], fields:{zoneHostName=entity.name}\n| filter isNotNull(zoneHostName)\n| dedup display_id`:'';
+  const recurrenceRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"${zoneFilter}\n| fields display_id,event.name,event.status,event.severity,event.start,event.end,resolved_problem_duration,root_cause.smartscape_entity,affected_entity_ids\n| sort event.start desc\n| limit 30`,30).catch(()=>[] as Row[]):[];
+  const recurrenceCountRows=name?await runDql(`fetch dt.davis.problems, from:now()-365d, to:now()\n| filter not(dt.davis.is_duplicate) and event.name == "${dqlEscape(name)}" and display_id != "${id}"${zoneFilter}\n| summarize recurrence_count=count()`,1).catch(()=>[] as Row[]):[];
+'''
+          if old not in s:
+              raise SystemExit('RCA recurrence block not found')
+          rca.write_text(s.replace(old, new, 1))
+
+          alert = Path('src/dynatraceAlertDumpV54.ts')
+          s = alert.read_text()
+          marker = "function severityLabel(value: unknown) {"
+          helper = """function problemType(row: ProblemRecord): string {
+  const category = text(row['event.category']).toUpperCase();
+  const title = text(row['event.name']).toUpperCase();
+  const entities = text(row.affected_entity_names || row.affected_entity_ids).toUpperCase();
+  if (category === 'CUSTOM' || title.includes('CUSTOM')) return 'Custom';
+  if (entities.includes('SERVICE') || title.includes('SERVICE')) return 'Service';
+  if (entities.includes('APPLICATION') || entities.includes('WEB_APPLICATION') || title.includes('APPLICATION')) return 'Application';
+  return 'Infrastructure';
+}
+
+"""
+          if marker not in s:
+              raise SystemExit('Alert severity marker not found')
+          s = s.replace(marker, helper + marker, 1)
+
+          old_controls = '''<label>Severity<select class="alert-dump-severity"><option value="ALL">All severities</option><option value="1">Level 1 — Critical</option><option value="2">Level 2</option><option value="3">Level 3</option><option value="4">Level 4</option><option value="5">Level 5 — Info</option></select></label><button class="alert-dump-load">Load problems</button>'''
+          new_controls = '''<label>Severity<select class="alert-dump-severity"><option value="ALL">All severities</option><option value="1">Level 1 — Critical</option><option value="2">Level 2</option><option value="3">Level 3</option><option value="4">Level 4</option><option value="5">Level 5 — Info</option></select></label><label>Category<select class="alert-dump-category"><option value="ALL">All categories</option><option value="INFRASTRUCTURE">Infrastructure</option><option value="SERVICE">Service</option><option value="APPLICATION">Application</option><option value="CUSTOM">Custom</option></select></label><button class="alert-dump-load">Load problems</button>'''
+          if old_controls not in s:
+              raise SystemExit('Alert controls marker not found')
+          s = s.replace(old_controls, new_controls, 1)
+
+          old_load = '''      const selectedZone = readTopbarValue(0, 'All Management Zones');
+      const query = buildProblemQuery(rangeSelect.value, modal.querySelector<HTMLSelectElement>('.alert-dump-status')!.value, modal.querySelector<HTMLSelectElement>('.alert-dump-severity')!.value, selectedZone);
+      rows = await executeDql(query); render();'''
+          new_load = '''      const selectedZone = readTopbarValue(0, 'All Management Zones');
+      const category = modal.querySelector<HTMLSelectElement>('.alert-dump-category')!.value;
+      const query = buildProblemQuery(rangeSelect.value, modal.querySelector<HTMLSelectElement>('.alert-dump-status')!.value, modal.querySelector<HTMLSelectElement>('.alert-dump-severity')!.value, selectedZone);
+      const fetchedRows = await executeDql(query);
+      rows = category === 'ALL' ? fetchedRows : fetchedRows.filter(row => problemType(row).toUpperCase() === category);
+      render();'''
+          if old_load not in s:
+              raise SystemExit('Alert load marker not found')
+          s = s.replace(old_load, new_load, 1)
+          alert.write_text(s)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/rcaButtonRecoveryV63.ts src/dynatraceAlertDumpV54.ts
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: scope RCA recurrence and add problem category filter"
+            git push
+          fi
