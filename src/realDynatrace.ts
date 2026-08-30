@@ -152,12 +152,12 @@ async function getNetwork(range: TimeRange, ids: string[]) {
   return new Map(records.map((record) => [hostId(record['dt.entity.host']), record]));
 }
 
-async function getThroughput(range: TimeRange, ids: string[]) {
-  if (!ids.length) return new Map<string, Record<string, unknown>>();
-  const { from, throughputInterval } = RANGE_SPEC[range];
-  const filter = hostFilter(ids);
-  const query = `fetch spans, from:now()-${from}, to:now() | filter request.is_root_span == true | filter isNotNull(dt.entity.host) and isNotNull(dt.entity.service) | ${filter} | makeTimeseries throughputSeries=count(), by:{dt.entity.host}, interval:${throughputInterval} | fieldsAdd throughputCurrent=arrayLast(throughputSeries) | fields dt.entity.host, throughputSeries, throughputCurrent, timeframe, interval`;
-  return new Map((await executeDql<Record<string, unknown>>(query)).map((record) => [hostId(record['dt.entity.host']), record]));
+// Application-service throughput is intentionally disabled on the Overview page.
+// The previous implementation queried raw spans across the selected timeframe and
+// was responsible for very high DPS consumption. Keep the function as a safe no-op
+// so the feature can be reintroduced later with a DPS-efficient metric-based design.
+async function getThroughput(_range: TimeRange, _ids: string[]) {
+  return new Map<string, Record<string, unknown>>();
 }
 
 const environment = (group: string): Host['environment'] => {
