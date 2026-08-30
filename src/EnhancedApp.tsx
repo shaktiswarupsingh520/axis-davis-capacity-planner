@@ -37,7 +37,7 @@ function installThroughputQueryGuard() {
       return {
         state: 'SUCCEEDED',
         result: { records: [] },
-      } as Awaited<ReturnType<typeof originalQueryExecute>>;
+      } as unknown as Awaited<ReturnType<typeof originalQueryExecute>>;
     }
     return originalQueryExecute(request);
   };
