@@ -64,6 +64,7 @@ export default function EnhancedApp() {
     installRcaWorkbenchV60();
     installRcaButtonRecoveryV62();
     installRcaButtonRecoveryV63();
+    hideDisabledThroughputPanel();
   }, []);
   return <RealAppV2 />;
 }
