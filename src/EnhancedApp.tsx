@@ -27,12 +27,21 @@ function installThroughputQueryGuard() {
   };
 }
 
+function hideDisabledThroughputPanel() {
+  if (document.getElementById('capacity-throughput-disabled-style')) return;
+  const style = document.createElement('style');
+  style.id = 'capacity-throughput-disabled-style';
+  style.textContent = '.overview-grid .status-panel{display:none!important}.overview-grid{grid-template-columns:1fr!important}';
+  document.head.appendChild(style);
+}
+
 export default function EnhancedApp() {
   installThroughputQueryGuard();
   useEffect(() => {
     installUiFixesV4();
     installSimulationProjectionV4();
     installProductionPdfV4();
+    hideDisabledThroughputPanel();
   }, []);
   return <RealAppV2 />;
 }
